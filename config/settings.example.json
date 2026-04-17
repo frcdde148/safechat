@@ -1,0 +1,22 @@
+{
+  "as_server": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+  "tgs_server": {
+    "host": "127.0.0.1",
+    "port": 8001
+  },
+  "service_server": {
+    "host": "127.0.0.1",
+    "port": 9000,
+    "service_name": "chat_service"
+  },
+  "database": {
+    "path": "data/kerberos_chat.db"
+  },
+  "logs": {
+    "auth_log": "logs/auth.log",
+    "chat_log": "logs/chat.log"
+  }
+}
