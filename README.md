@@ -1,68 +1,27 @@
-# 网络安全课程设计
+# SafeChat 网络安全课程设计
 
-本项目是一个基于 Kerberos V4 的局域网认证聊天室系统，包含 `Client`、`AS`、`TGS`、`Service Server` 四类实体，并通过 `PyQt/PySide` GUI 展示认证与报文细节。
+SafeChat 是一个基于 Kerberos V4 流程并扩展数字签名与摘要校验机制的局域网认证聊天室系统。系统包含 `Client`、`AS`、`TGS`、`ChatServer` 四类实体，使用 TCP Socket、JSON + Base64 报文、长度前缀封包和多线程模型完成多用户并发通信。
 
-## 项目目录
+## 架构概览
 
-```text
-.
-├── README.md
-├── doc.md
-├── as_server/
-│   ├── __init__.py
-│   ├── main.py
-│   └── README.md
-├── client/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── README.md
-│   └── gui/
-│       ├── __init__.py
-│       └── README.md
-├── common/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── crypto.py
-│   ├── database.py
-│   ├── logger.py
-│   ├── models.py
-│   ├── protocol.py
-│   └── utils.py
-├── config/
-│   ├── README.md
-│   └── settings.example.json
-├── data/
-│   ├── .gitkeep
-│   └── README.md
-├── logs/
-│   ├── .gitkeep
-│   └── README.md
-├── scripts/
-│   ├── README.md
-│   └── init_db.py
-├── service_server/
-│   ├── __init__.py
-│   ├── main.py
-│   └── README.md
-├── tests/
-│   ├── __init__.py
-│   └── README.md
-└── tgs_server/
-    ├── __init__.py
-    ├── main.py
-    └── README.md
+项目采用客户端层、服务层、数据层的三层架构：
+
+- `client/`：PyQt5 客户端、控制逻辑、网络通信、票据与加密处理。
+- `server/`：AS 认证服务器、TGS 票据授予服务器、ChatServer 聊天服务器。
+- `common/`：协议、DES/RSA/SHA-256/AES 封装、配置、模型和工具。
+- `database/`：SQLite 初始化脚本、DAO 和数据库文件。
+- `logs/`、`tests/`、`docs/`、`scripts/`：日志、测试、文档和辅助脚本。
+
+## 安全设计
+
+- Kerberos V4 六步认证流程用于身份认证、票据签发和会话密钥分发。
+- DES 用于课程设计要求下的票据与会话消息机密性保护。
+- RSA-1024 用于关键操作签名与验签，覆盖 `CHAT_SEND`、`CHAT_RECV`、`CHAT_ACK` 和 `FILE_*` 消息。
+- SHA-256 用于用户密码加盐哈希和摘要校验。
+- 审计日志记录登录、登出、消息操作、票据异常和非法访问等关键事件。
+
+## 初始化数据库
+
+```bash
+python -m database.init_db
 ```
-
-## 目录说明
-
-- `client/`：客户端程序与 GUI 逻辑。
-- `as_server/`：认证服务器程序。
-- `tgs_server/`：票据授权服务器程序。
-- `service_server/`：聊天室服务端程序。
-- `common/`：共享的数据结构、协议封装、加密、配置和日志工具。
-- `config/`：配置模板与部署配置文件。
-- `data/`：SQLite 数据库等运行时数据。
-- `logs/`：认证日志和聊天日志。
-- `scripts/`：初始化数据库等辅助脚本。
-- `tests/`：测试代码。
-

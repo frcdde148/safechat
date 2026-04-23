@@ -1,0 +1,29 @@
+{
+  "as_server": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+  "tgs_server": {
+    "host": "127.0.0.1",
+    "port": 8001
+  },
+  "chat_server": {
+    "host": "127.0.0.1",
+    "port": 9000,
+    "service_name": "chat_server"
+  },
+  "database": {
+    "path": "database/chatroom.db"
+  },
+  "logs": {
+    "auth_log": "logs/auth.log",
+    "chat_log": "logs/chat.log",
+    "audit_log": "logs/audit.log"
+  },
+  "security": {
+    "password_hash": "sha256",
+    "signature": "rsa-1024",
+    "ticket_cipher": "des",
+    "audit_content_cipher": "aes"
+  }
+}
