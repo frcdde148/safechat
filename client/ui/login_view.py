@@ -22,6 +22,7 @@ class LoginView(QWidget):
     """Client login view with server configuration and auth status."""
 
     login_requested = pyqtSignal(dict)
+    enter_chat_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -36,6 +37,10 @@ class LoginView(QWidget):
         self.status_label = QLabel("等待登录")
         self.status_label.setObjectName("mutedBadge")
         self.auth_flow = AuthFlowView()
+        self.enter_chat_button = QPushButton("进入聊天室")
+        self.enter_chat_button.setObjectName("secondaryButton")
+        self.enter_chat_button.setEnabled(False)
+        self.enter_chat_button.clicked.connect(self.enter_chat_requested.emit)
 
         self._build_ui()
 
@@ -65,6 +70,7 @@ class LoginView(QWidget):
         self.login_button = QPushButton("登录认证")
         self.login_button.clicked.connect(self._emit_login_requested)
         form.addRow("", self.login_button)
+        form.addRow("", self.enter_chat_button)
 
         status_panel = QFrame()
         status_panel.setObjectName("panel")
