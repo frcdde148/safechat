@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QTextEdit, QVBoxLayout, QWidget
 
 
 AUTH_STAGES = (
@@ -23,7 +23,7 @@ class StageRow(QFrame):
         super().__init__(parent)
         self.setObjectName("stageRow")
         self.code_label = QLabel(code)
-        self.code_label.setMinimumWidth(92)
+        self.code_label.setMinimumWidth(170)
         self.code_label.setStyleSheet("font-weight: 700; color: #1e293b;")
 
         self.text_label = QLabel(label)
@@ -32,7 +32,7 @@ class StageRow(QFrame):
         self.status_label = QLabel("等待")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setObjectName("mutedBadge")
-        self.status_label.setMinimumWidth(58)
+        self.status_label.setMinimumWidth(110)
 
         layout = QGridLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -63,9 +63,14 @@ class AuthFlowView(QFrame):
         super().__init__(parent)
         self.setObjectName("panel")
         self.stage_rows: dict[str, StageRow] = {}
+        self.detail_view = QTextEdit()
+        self.detail_view.setReadOnly(True)
+        self.detail_view.setPlaceholderText("点击登录认证后，这里会逐步显示 Kerberos 报文细节。")
 
         title = QLabel("认证阶段")
         title.setObjectName("sectionTitle")
+        detail_title = QLabel("报文细节")
+        detail_title.setObjectName("sectionTitle")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -77,12 +82,14 @@ class AuthFlowView(QFrame):
             self.stage_rows[code] = row
             layout.addWidget(row)
 
-        layout.addStretch(1)
+        layout.addWidget(detail_title)
+        layout.addWidget(self.detail_view, 1)
 
     def reset(self) -> None:
         """Reset all stages to waiting."""
         for row in self.stage_rows.values():
             row.set_status("waiting")
+        self.detail_view.clear()
 
     def mark_running(self, stage_code: str) -> None:
         """Mark a stage as running."""
@@ -95,3 +102,9 @@ class AuthFlowView(QFrame):
     def mark_failed(self, stage_code: str) -> None:
         """Mark a stage as failed."""
         self.stage_rows[stage_code].set_status("failed")
+
+    def append_detail(self, title: str, body: str) -> None:
+        """Append human-readable protocol detail for classroom demonstration."""
+        self.detail_view.append(f"=== {title} ===")
+        self.detail_view.append(body)
+        self.detail_view.append("")
