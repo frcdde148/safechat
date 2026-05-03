@@ -18,6 +18,7 @@ AUTH_TYPES = {
 
 DATA_TYPES = {
     "CHAT_SEND",
+    "CHAT_POLL",
     "CHAT_RECV",
     "CHAT_ACK",
     "USER_LIST",

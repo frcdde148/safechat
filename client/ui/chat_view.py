@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QFrame,
@@ -83,6 +83,8 @@ class StatusLine(QWidget):
 class ChatView(QWidget):
     """Three-column chat workspace."""
 
+    message_send_requested = pyqtSignal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.current_user_label = QLabel("alice")
@@ -91,6 +93,7 @@ class ChatView(QWidget):
         self.session_selector = QComboBox()
         self.message_area = QVBoxLayout()
         self.message_input = QTextEdit()
+        self.send_button = QPushButton("发送")
 
         self.session_type_status = StatusLine("会话类型", "群聊", "okBadge")
         self.server_status = StatusLine("连接服务器", "127.0.0.1:9000", "okBadge")
@@ -163,10 +166,10 @@ class ChatView(QWidget):
         button_row = QHBoxLayout()
         file_button = QPushButton("文件")
         file_button.setObjectName("secondaryButton")
-        send_button = QPushButton("发送")
+        self.send_button.clicked.connect(self._emit_message_send_requested)
         button_row.addWidget(file_button)
         button_row.addStretch(1)
-        button_row.addWidget(send_button)
+        button_row.addWidget(self.send_button)
         layout.addLayout(button_row)
         return panel
 
@@ -201,21 +204,26 @@ class ChatView(QWidget):
     def add_message(self, text: str, kind: str = "peer") -> None:
         self.message_area.insertWidget(self.message_area.count() - 1, MessageBubble(text, kind))
 
-    def _seed_demo_content(self) -> None:
-        users = (
-            ("alice", "认证通过"),
-            ("bob", "在线"),
-            ("carol", "离线"),
-            ("dave", "异常断开"),
-        )
-        for username, status in users:
-            item = QListWidgetItem(f"{username}    {status}")
-            self.user_list.addItem(item)
+    def set_online_users(self, users: list[dict]) -> None:
+        """Replace the left-side online user list with server state."""
+        self.user_list.clear()
+        for user in users:
+            username = user.get("username", "")
+            status = user.get("status", "在线")
+            client_ip = user.get("client_ip", "")
+            suffix = f"    {status}"
+            if client_ip:
+                suffix = f"{suffix}    {client_ip}"
+            self.user_list.addItem(QListWidgetItem(f"{username}{suffix}"))
 
+    def _emit_message_send_requested(self) -> None:
+        text = self.message_input.toPlainText().strip()
+        if text:
+            self.message_send_requested.emit(text)
+
+    def _seed_demo_content(self) -> None:
         self.add_message("系统通知：已进入群聊", "system")
         self.add_message("安全提示：会话密钥已建立，消息将加密传输", "security")
-        self.add_message("bob：你好，认证流程已经完成", "peer")
-        self.add_message("alice：收到，准备发送签名消息", "self")
 
     @staticmethod
     def _tip(text: str, badge: str) -> QLabel:
