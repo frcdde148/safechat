@@ -84,6 +84,7 @@ class ChatView(QWidget):
     """Three-column chat workspace."""
 
     message_send_requested = pyqtSignal(str)
+    session_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -130,6 +131,7 @@ class ChatView(QWidget):
 
         layout.addWidget(QLabel("会话入口"))
         self.session_selector.addItems(("群聊", "私聊 alice", "私聊 bob", "私聊 carol", "私聊 dave"))
+        self.session_selector.currentIndexChanged.connect(self.session_changed.emit)
         layout.addWidget(self.session_selector)
 
         layout.addWidget(QLabel("在线用户"))
@@ -204,9 +206,37 @@ class ChatView(QWidget):
     def add_message(self, text: str, kind: str = "peer") -> None:
         self.message_area.insertWidget(self.message_area.count() - 1, MessageBubble(text, kind))
 
+    def clear_messages(self) -> None:
+        """Remove all visible message bubbles."""
+        while self.message_area.count() > 1:
+            item = self.message_area.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def current_session(self) -> dict[str, str]:
+        """Return selected group/private chat routing data."""
+        label = self.session_selector.currentText()
+        if label.startswith("私聊 "):
+            return {
+                "chat_type": "private",
+                "recipient": label.replace("私聊 ", "", 1).strip(),
+                "title": label,
+            }
+        return {
+            "chat_type": "group",
+            "recipient": "",
+            "title": "群聊",
+        }
+
     def set_online_users(self, users: list[dict]) -> None:
         """Replace the left-side online user list with server state."""
         self.user_list.clear()
+        current_user = self.current_user_label.text()
+        current_session = self.current_session()
+        self.session_selector.blockSignals(True)
+        self.session_selector.clear()
+        self.session_selector.addItem("群聊")
         for user in users:
             username = user.get("username", "")
             status = user.get("status", "在线")
@@ -215,6 +245,12 @@ class ChatView(QWidget):
             if client_ip:
                 suffix = f"{suffix}    {client_ip}"
             self.user_list.addItem(QListWidgetItem(f"{username}{suffix}"))
+            if username and username != current_user:
+                self.session_selector.addItem(f"私聊 {username}")
+        target_label = current_session["title"]
+        index = self.session_selector.findText(target_label)
+        self.session_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.session_selector.blockSignals(False)
 
     def _emit_message_send_requested(self) -> None:
         text = self.message_input.toPlainText().strip()

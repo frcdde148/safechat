@@ -27,8 +27,12 @@ class AuthClient:
         self.service_ticket: dict[str, str] | None = None
         self.session_key_c_tgs = ""
         self.session_key_c_v = ""
+<<<<<<< HEAD
         self.session_id = ""
         self.last_message_id = 0
+=======
+        self.last_message_ids: dict[str, int] = {}
+>>>>>>> origin/main
         self.private_key_pem, self.public_key_pem = generate_key_pair()
 
     def run_stage(self, stage_code: str) -> tuple[bool, str]:
@@ -136,7 +140,7 @@ class AuthClient:
         self.seq += 1
         return value
 
-    def send_chat_message(self, text: str) -> dict[str, Any]:
+    def send_chat_message(self, text: str, chat_type: str = "group", recipient: str = "") -> dict[str, Any]:
         """Send one encrypted chat message using Kc,v and the service ticket."""
         if not self.service_ticket or not self.session_key_c_v:
             raise ValueError("chat session is not authenticated")
@@ -144,6 +148,8 @@ class AuthClient:
         body = {
             "service_ticket": self.service_ticket,
             "message_cipher": message_cipher,
+            "chat_type": chat_type,
+            "recipient": recipient,
         }
         digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
@@ -166,16 +172,19 @@ class AuthClient:
             "ack": plaintext_ack,
         }
 
-    def poll_chat_messages(self) -> list[dict[str, Any]]:
-        """Fetch and decrypt group-chat messages newer than last_message_id."""
+    def poll_chat_messages(self, chat_type: str = "group", recipient: str = "") -> list[dict[str, Any]]:
+        """Fetch and decrypt messages for one group/private session."""
         if not self.service_ticket or not self.session_key_c_v:
             raise ValueError("chat session is not authenticated")
+        session_key = self._session_key(chat_type, recipient)
         message = Message(
             type="CHAT_POLL",
             seq=self._next_seq(),
             body={
                 "service_ticket": self.service_ticket,
-                "last_seen_id": self.last_message_id,
+                "last_seen_id": self.last_message_ids.get(session_key, 0),
+                "chat_type": chat_type,
+                "recipient": recipient,
             },
         )
         response = request(self.chat_host, self.chat_port, message)
@@ -185,16 +194,28 @@ class AuthClient:
             cipher = item["message_cipher"]
             text = decrypt_text(cipher["ciphertext"], cipher["iv"], self.session_key_c_v)
             message_id = int(item["id"])
-            self.last_message_id = max(self.last_message_id, message_id)
+            self.last_message_ids[session_key] = max(self.last_message_ids.get(session_key, 0), message_id)
             decrypted.append(
                 {
                     "id": message_id,
                     "sender": item["sender"],
+                    "recipient": item.get("recipient", ""),
+                    "chat_type": item.get("chat_type", "group"),
                     "timestamp": item["timestamp"],
                     "text": text,
                 }
             )
         return decrypted
+
+    def reset_session_cursor(self, chat_type: str = "group", recipient: str = "") -> None:
+        """Reset one session cursor so switching views can reload recent messages."""
+        self.last_message_ids[self._session_key(chat_type, recipient)] = 0
+
+    def _session_key(self, chat_type: str = "group", recipient: str = "") -> str:
+        if chat_type == "private":
+            users = sorted([self.username, recipient])
+            return f"private:{users[0]}:{users[1]}"
+        return "group:public"
 
     def fetch_online_users(self) -> list[dict[str, Any]]:
         """Fetch the current ChatServer online user list."""
