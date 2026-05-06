@@ -68,6 +68,22 @@ def create_schema(conn: sqlite3.Connection) -> None:
             public_key TEXT,
             created_at INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS active_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            session_id TEXT UNIQUE NOT NULL,
+            client_ip TEXT NOT NULL,
+            tgt_issued_at INTEGER NOT NULL,
+            tgt_expires_at INTEGER NOT NULL,
+            service_ticket_issued_at INTEGER,
+            service_ticket_expires_at INTEGER,
+            last_seen INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            FOREIGN KEY (username) REFERENCES users(username)
+        );
+        CREATE INDEX IF NOT EXISTS idx_active_sessions_username ON active_sessions(username);
+        CREATE INDEX IF NOT EXISTS idx_active_sessions_status ON active_sessions(status);
         """
     )
 

@@ -27,6 +27,7 @@ class AuthClient:
         self.service_ticket: dict[str, str] | None = None
         self.session_key_c_tgs = ""
         self.session_key_c_v = ""
+        self.session_id = ""
         self.last_message_id = 0
         self.private_key_pem, self.public_key_pem = generate_key_pair()
 
@@ -59,6 +60,7 @@ class AuthClient:
         self._raise_on_error(response)
         self.session_key_c_tgs = response["body"]["session_key_c_tgs"]
         self.tgt = response["body"]["ticket_tgt"]
+        self.session_id = response["body"].get("session_id", "")
         return self._format_exchange(message.to_dict(), response)
 
     def _explain_as_response(self) -> str:
@@ -113,6 +115,7 @@ class AuthClient:
             body={
                 "service_ticket": self.service_ticket,
                 "authenticator": authenticator,
+                "session_id": self.session_id,
             },
         )
         response = request(self.chat_host, self.chat_port, message)

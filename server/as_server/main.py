@@ -31,6 +31,18 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
         dao.add_audit_log("", username or "unknown", client_addr, "LOGIN_FAILED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "invalid username or password"})
 
+    # Check for existing active session (Single Sign-On control)
+    existing_session = dao.get_active_session(username)
+    if existing_session:
+        existing_ip = existing_session["client_ip"]
+        if existing_ip != client_addr:
+            dao.add_audit_log("", username, client_addr, "LOGIN_DENIED_DUPLICATE")
+            return Message(
+                type="ERROR",
+                seq=message["seq"],
+                body={"error": f"user {username} is already logged in from {existing_ip}"},
+            )
+
     service = dao.get_service(TGS_SERVICE)
     if not service:
         return Message(type="ERROR", seq=message["seq"], body={"error": "TGS service is not configured"})
@@ -38,7 +50,12 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
     session_key = secrets.token_hex(16)
     tgt = issue_ticket(username, client_addr, session_key, TGS_SERVICE)
     encrypted_tgt = encrypt_model(tgt, service["service_key"])
-    dao.add_audit_log("", username, client_addr, "LOGIN_AS_OK")
+
+    # Create session record (invalidates any existing sessions)
+    session_id = secrets.token_hex(32)
+    dao.create_session(username, session_id, client_addr, tgt.issued_at, tgt.expires_at)
+
+    dao.add_audit_log(session_id, username, client_addr, "LOGIN_AS_OK")
     return Message(
         type="AS_C_REP",
         seq=message["seq"],
@@ -48,6 +65,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
             "ticket_tgt": encrypted_tgt,
             "tgs_host": service["service_host"],
             "tgs_port": service["service_port"],
+            "session_id": session_id,
         },
     )
 
