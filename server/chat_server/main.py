@@ -86,7 +86,11 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
 
     cipher = message["body"]["message_cipher"]
     plaintext = decrypt_text(cipher["ciphertext"], cipher["iv"], ticket.session_key)
-    message_id = _append_chat_message(ticket.client_id, plaintext)
+    chat_type = message["body"].get("chat_type", "group")
+    recipient = message["body"].get("recipient", "")
+    if chat_type == "private" and not recipient:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "private chat requires recipient"})
+    message_id = _append_chat_message(ticket.client_id, plaintext, chat_type, recipient)
     dao.add_audit_log(
         "",
         ticket.client_id,
@@ -100,9 +104,11 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
         seq=message["seq"],
         body={
             "sender": ticket.client_id,
+            "recipient": recipient,
+            "chat_type": chat_type,
             "message_id": message_id,
             "ack_cipher": encrypt_text(ack_text, ticket.session_key),
-            "room": "public",
+            "room": _session_key(ticket.client_id, chat_type, recipient),
         },
     )
 
@@ -124,14 +130,25 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     ticket = _decrypt_valid_service_ticket(message)
     _mark_user_online(ticket.client_id, address[0])
     last_seen_id = int(message["body"].get("last_seen_id", 0))
+    chat_type = message["body"].get("chat_type", "group")
+    recipient = message["body"].get("recipient", "")
+    session_key = _session_key(ticket.client_id, chat_type, recipient)
     with messages_lock:
-        pending = [item.copy() for item in chat_messages if item["id"] > last_seen_id]
+        pending = [
+            item.copy()
+            for item in chat_messages
+            if item["id"] > last_seen_id
+            and item["session_key"] == session_key
+            and _can_read_message(ticket.client_id, item)
+        ]
     encrypted_messages = []
     for item in pending:
         encrypted_messages.append(
             {
                 "id": item["id"],
                 "sender": item["sender"],
+                "recipient": item["recipient"],
+                "chat_type": item["chat_type"],
                 "timestamp": item["timestamp"],
                 "message_cipher": encrypt_text(item["text"], ticket.session_key),
             }
@@ -142,7 +159,7 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
         seq=message["seq"],
         body={
             "messages": encrypted_messages,
-            "room": "public",
+            "room": session_key,
         },
     )
 
@@ -173,20 +190,37 @@ def _decrypt_valid_service_ticket(message: dict):
     return ticket
 
 
-def _append_chat_message(sender: str, text: str) -> int:
+def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str) -> int:
     global next_message_id
     with messages_lock:
         message_id = next_message_id
         next_message_id += 1
+        session_key = _session_key(sender, chat_type, recipient)
         chat_messages.append(
             {
                 "id": message_id,
                 "sender": sender,
+                "recipient": recipient,
+                "chat_type": chat_type,
+                "session_key": session_key,
                 "text": text,
                 "timestamp": int(time.time() * 1000),
             }
         )
         return message_id
+
+
+def _session_key(sender: str, chat_type: str, recipient: str) -> str:
+    if chat_type == "private":
+        users = sorted([sender, recipient])
+        return f"private:{users[0]}:{users[1]}"
+    return "group:public"
+
+
+def _can_read_message(username: str, message: dict) -> bool:
+    if message["chat_type"] == "private":
+        return username in {message["sender"], message["recipient"]}
+    return True
 
 
 def _mark_user_online(username: str, client_ip: str) -> None:
