@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self.login_view.login_requested.connect(self._start_demo_auth)
         self.login_view.enter_chat_requested.connect(self._enter_chat)
         self.chat_view.message_send_requested.connect(self._send_chat_message)
+        self.chat_view.session_changed.connect(self._switch_chat_session)
 
     def _start_demo_auth(self, payload: dict) -> None:
         """Run a local UI authentication demo until real controllers are wired."""
@@ -119,7 +120,12 @@ class MainWindow(QMainWindow):
         self.chat_view.send_button.setEnabled(False)
         self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self")
         try:
-            result = self._auth_client.send_chat_message(text)
+            session = self.chat_view.current_session()
+            result = self._auth_client.send_chat_message(
+                text,
+                session["chat_type"],
+                session["recipient"],
+            )
         except Exception as exc:
             self.chat_view.add_message(f"安全提示：消息发送失败，{exc}", "security")
             self.chat_view.security_status.set_value("发送失败", "errorBadge")
@@ -135,17 +141,15 @@ class MainWindow(QMainWindow):
         if not self._auth_client or self.stack.currentWidget() is not self.chat_view:
             return
         try:
-            messages = self._auth_client.poll_chat_messages()
+            session = self.chat_view.current_session()
+            messages = self._auth_client.poll_chat_messages(session["chat_type"], session["recipient"])
         except Exception as exc:
             self.chat_view.security_status.set_value("轮询失败", "errorBadge")
             self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
             self._poll_timer.stop()
             return
 
-        for message in messages:
-            if message["sender"] == self._auth_client.username:
-                continue
-            self.chat_view.add_message(f"{message['sender']}：{message['text']}", "peer")
+        self._display_chat_messages(messages)
         if messages:
             self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
             self.chat_view.security_status.set_value("群聊同步正常", "okBadge")
@@ -161,3 +165,29 @@ class MainWindow(QMainWindow):
             self.chat_view.add_message(f"安全提示：刷新在线用户失败，{exc}", "security")
             return
         self.chat_view.set_online_users(users)
+
+    def _switch_chat_session(self) -> None:
+        self.chat_view.clear_messages()
+        session = self.chat_view.current_session()
+        self.chat_view.session_type_status.set_value(session["title"], "okBadge")
+        self.chat_view.add_message(f"系统通知：已切换到 {session['title']}", "system")
+        if not self._auth_client:
+            return
+        self._auth_client.reset_session_cursor(session["chat_type"], session["recipient"])
+        try:
+            messages = self._auth_client.poll_chat_messages(session["chat_type"], session["recipient"])
+        except Exception as exc:
+            self.chat_view.security_status.set_value("轮询失败", "errorBadge")
+            self.chat_view.add_message(f"安全提示：拉取会话消息失败，{exc}", "security")
+            return
+        self._display_chat_messages(messages, include_self=True)
+
+    def _display_chat_messages(self, messages: list[dict], include_self: bool = False) -> None:
+        if not self._auth_client:
+            return
+        for message in messages:
+            is_self = message["sender"] == self._auth_client.username
+            if is_self and not include_self:
+                continue
+            kind = "self" if is_self else "peer"
+            self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind)
