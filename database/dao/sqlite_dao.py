@@ -70,6 +70,105 @@ class SQLiteDAO:
             ).fetchone()
             return row is not None
 
+    def get_active_session(self, username: str) -> dict[str, Any] | None:
+        """Get the active session for a user if exists."""
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM active_sessions
+                WHERE username = ? AND status = 'active' AND tgt_expires_at >= ?
+                LIMIT 1
+                """,
+                (username, now),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def create_session(
+        self,
+        username: str,
+        session_id: str,
+        client_ip: str,
+        tgt_issued_at: int,
+        tgt_expires_at: int,
+    ) -> None:
+        """Create a new session, invalidating any existing sessions for the user."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE active_sessions
+                SET status = 'invalidated'
+                WHERE username = ? AND status = 'active'
+                """,
+                (username,),
+            )
+            conn.execute(
+                """
+                INSERT INTO active_sessions
+                    (username, session_id, client_ip, tgt_issued_at, tgt_expires_at, last_seen, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'active')
+                """,
+                (username, session_id, client_ip, tgt_issued_at, tgt_expires_at, int(time.time() * 1000)),
+            )
+            conn.commit()
+
+    def update_session_service_ticket(
+        self,
+        session_id: str,
+        service_ticket_issued_at: int,
+        service_ticket_expires_at: int,
+    ) -> None:
+        """Update session with service ticket info."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE active_sessions
+                SET service_ticket_issued_at = ?, service_ticket_expires_at = ?, last_seen = ?
+                WHERE session_id = ?
+                """,
+                (service_ticket_issued_at, service_ticket_expires_at, int(time.time() * 1000), session_id),
+            )
+            conn.commit()
+
+    def update_session_last_seen(self, session_id: str) -> None:
+        """Update last seen timestamp for a session."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE active_sessions
+                SET last_seen = ?
+                WHERE session_id = ?
+                """,
+                (int(time.time() * 1000), session_id),
+            )
+            conn.commit()
+
+    def invalidate_session(self, session_id: str) -> None:
+        """Invalidate a session by session_id."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE active_sessions
+                SET status = 'invalidated'
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            )
+            conn.commit()
+
+    def invalidate_user_sessions(self, username: str) -> None:
+        """Invalidate all sessions for a user."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE active_sessions
+                SET status = 'invalidated'
+                WHERE username = ?
+                """,
+                (username,),
+            )
+            conn.commit()
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row

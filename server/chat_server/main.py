@@ -23,7 +23,7 @@ messages_lock = threading.Lock()
 chat_messages: list[dict] = []
 next_message_id = 1
 online_lock = threading.Lock()
-online_users: dict[str, dict] = {}
+online_users: dict[str, dict] = {}  # username -> {session_id, client_ip, last_seen, status}
 ONLINE_TIMEOUT_MS = 30_000
 
 
@@ -63,9 +63,26 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     if authenticator.client_addr and authenticator.client_addr != ticket.client_addr:
         return Message(type="ERROR", seq=message["seq"], body={"error": "authenticator does not match service ticket"})
 
+    # Verify session is valid (Single Sign-On check)
+    session_id = message["body"].get("session_id", "")
+    if not session_id:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "session_id is required"})
+
+    active_session = dao.get_active_session(ticket.client_id)
+    if not active_session or active_session["session_id"] != session_id:
+        dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_FAILED_INVALID_SESSION")
+        return Message(
+            type="ERROR",
+            seq=message["seq"],
+            body={"error": "session is invalid or user logged in from another location"},
+        )
+
+    # Update session with service ticket info
+    dao.update_session_service_ticket(session_id, ticket.issued_at, ticket.expires_at)
+
     mutual_auth = encrypt_model({"timestamp_plus_one": authenticator.timestamp + 1}, ticket.session_key)
-    _mark_user_online(ticket.client_id, address[0])
-    dao.add_audit_log("", ticket.client_id, address[0], "CHAT_AUTH_OK")
+    _mark_user_online(ticket.client_id, session_id, address[0])
+    dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_OK")
     return Message(
         type="V_C_REP",
         seq=message["seq"],
@@ -210,6 +227,9 @@ def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str)
         return message_id
 
 
+<<<<<<< HEAD
+def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:
+=======
 def _session_key(sender: str, chat_type: str, recipient: str) -> str:
     if chat_type == "private":
         users = sorted([sender, recipient])
@@ -224,9 +244,11 @@ def _can_read_message(username: str, message: dict) -> bool:
 
 
 def _mark_user_online(username: str, client_ip: str) -> None:
+>>>>>>> origin/main
     with online_lock:
         online_users[username] = {
             "username": username,
+            "session_id": session_id,
             "client_ip": client_ip,
             "last_seen": int(time.time() * 1000),
             "status": "在线",
