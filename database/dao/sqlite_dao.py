@@ -7,15 +7,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from common.config.settings import database_path
 from common.crypto.sha256 import verify_password
-from database.init_db import DB_PATH
 
 
 class SQLiteDAO:
     """Small DAO wrapper used by the demo authentication servers."""
 
-    def __init__(self, db_path: Path = DB_PATH) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: Path | None = None) -> None:
+        self.db_path = db_path or database_path()
 
     def get_user(self, username: str) -> dict[str, Any] | None:
         """Fetch one user by username."""

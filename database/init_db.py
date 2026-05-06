@@ -8,8 +8,9 @@ import sqlite3
 import time
 from pathlib import Path
 
+from common.config.settings import database_path, service_address, service_key
 
-DB_PATH = Path(__file__).resolve().parent / "chatroom.db"
+DB_PATH = database_path()
 
 
 SEED_USERS = (
@@ -89,16 +90,22 @@ def seed_users(conn: sqlite3.Connection) -> None:
 def seed_services(conn: sqlite3.Connection) -> None:
     """Seed logical AS/TGS/ChatServer service records."""
     now = int(time.time() * 1000)
+    tgs_host, tgs_port = service_address("tgs_server")
+    chat_host, chat_port = service_address("chat_server")
     services = (
-        ("tgs_server", "127.0.0.1", 8001, "demo-tgs-key"),
-        ("chat_server", "127.0.0.1", 9000, "demo-chat-key"),
+        ("tgs_server", tgs_host, tgs_port, service_key("tgs_server")),
+        ("chat_server", chat_host, chat_port, service_key("chat_server")),
     )
     for service_name, host, port, key in services:
         conn.execute(
             """
-            INSERT OR IGNORE INTO services
+            INSERT INTO services
                 (service_name, service_host, service_port, service_key, created_at)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(service_name) DO UPDATE SET
+                service_host = excluded.service_host,
+                service_port = excluded.service_port,
+                service_key = excluded.service_key
             """,
             (service_name, host, port, key, now),
         )

@@ -6,6 +6,7 @@ import json
 import threading
 import time
 
+from common.config.settings import server_bind_address
 from common.crypto.des import decrypt_text, encrypt_text
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model
 from common.protocol.message import Message
@@ -14,8 +15,6 @@ from database.dao.sqlite_dao import SQLiteDAO
 from server.simple_tcp_server import serve
 
 
-HOST = "127.0.0.1"
-PORT = 9000
 CHAT_SERVICE = "chat_server"
 
 
@@ -215,7 +214,8 @@ def _current_online_users() -> list[dict]:
 
 def main() -> None:
     """Start the chat server."""
-    serve(HOST, PORT, "ChatServer", handle_message)
+    host, port = server_bind_address("chat_server")
+    serve(host, port, "ChatServer", handle_message)
 
 
 if __name__ == "__main__":

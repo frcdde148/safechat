@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import secrets
 
+from common.config.settings import server_bind_address
 from common.models.tickets import encrypt_model, issue_ticket
 from common.protocol.message import Message
 from database.dao.sqlite_dao import SQLiteDAO
 from server.simple_tcp_server import serve
 
 
-HOST = "127.0.0.1"
-PORT = 8000
 TGS_SERVICE = "tgs_server"
 
 
@@ -55,7 +54,8 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
 
 def main() -> None:
     """Start the authentication server."""
-    serve(HOST, PORT, "AS server", handle_message)
+    host, port = server_bind_address("as_server")
+    serve(host, port, "AS server", handle_message)
 
 
 if __name__ == "__main__":

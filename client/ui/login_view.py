@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from common.config.settings import service_address
 from client.ui.auth_flow_view import AuthFlowView
 
 
@@ -26,14 +27,17 @@ class LoginView(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        as_host, as_port = service_address("as_server")
+        tgs_host, tgs_port = service_address("tgs_server")
+        chat_host, chat_port = service_address("chat_server")
         self.username_input = QLineEdit()
         self.password_input = QLineEdit()
-        self.as_host_input = QLineEdit("127.0.0.1")
-        self.tgs_host_input = QLineEdit("127.0.0.1")
-        self.chat_host_input = QLineEdit("127.0.0.1")
-        self.as_port_input = self._port_box(8000)
-        self.tgs_port_input = self._port_box(8001)
-        self.chat_port_input = self._port_box(9000)
+        self.as_host_input = QLineEdit(as_host)
+        self.tgs_host_input = QLineEdit(tgs_host)
+        self.chat_host_input = QLineEdit(chat_host)
+        self.as_port_input = self._port_box(as_port)
+        self.tgs_port_input = self._port_box(tgs_port)
+        self.chat_port_input = self._port_box(chat_port)
         self.status_label = QLabel("等待登录")
         self.status_label.setObjectName("mutedBadge")
         self.auth_flow = AuthFlowView()
