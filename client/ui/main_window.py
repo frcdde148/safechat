@@ -110,6 +110,13 @@ class MainWindow(QMainWindow):
         self.chat_view.server_status.set_value(f"{chat_host}:{chat_port}", "okBadge")
         self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
         self.stack.setCurrentWidget(self.chat_view)
+        
+        # Display offline messages if any
+        if self._auth_client:
+            offline_messages = self._auth_client.get_offline_messages()
+            for msg in offline_messages:
+                self.chat_view.add_message(f"{msg['sender']}：{msg['text']}", "other", msg.get("ciphertext"))
+        
         self._refresh_online_users()
         self._poll_timer.start()
 
@@ -122,9 +129,6 @@ class MainWindow(QMainWindow):
         self.chat_view.send_button.setEnabled(False)
         session = self.chat_view.current_session()
         
-        # 添加发送的消息
-        self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self")
-        
         try:
             result = self._auth_client.send_chat_message(
                 text,
@@ -132,6 +136,10 @@ class MainWindow(QMainWindow):
                 session["recipient"],
             )
             self.chat_view.message_input.clear()
+            
+            # 添加发送的消息（包含密文）
+            ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
+            self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self", ciphertext)
             ack = result.get("ack", "")
             if ack:
                 self.chat_view.add_message(f"安全回执：{ack}", "security")

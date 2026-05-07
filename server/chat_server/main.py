@@ -82,6 +82,24 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
 
     mutual_auth = encrypt_model({"timestamp_plus_one": authenticator.timestamp + 1}, ticket.session_key)
     _mark_user_online(ticket.client_id, session_id, address[0])
+    
+    # Check for offline messages and push them
+    offline_messages = dao.get_offline_messages(ticket.client_id)
+    offline_messages_data = []
+    for msg in offline_messages:
+        # Encrypt message with recipient's session key
+        message_cipher = encrypt_text(msg["message_text"], ticket.session_key)
+        offline_messages_data.append({
+            "id": msg["id"],
+            "sender": msg["sender"],
+            "message_cipher": message_cipher["ciphertext"],
+            "iv": message_cipher["iv"],
+            "chat_type": msg["chat_type"],
+            "created_at": msg["created_at"],
+        })
+        # Delete the message from offline queue
+        dao.delete_offline_message(msg["id"])
+    
     dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_OK")
     return Message(
         type="V_C_REP",
@@ -89,6 +107,7 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
         body={
             "client_id": ticket.client_id,
             "mutual_auth": mutual_auth,
+            "offline_messages": offline_messages_data,
             "room": "public",
         },
     )
@@ -106,6 +125,7 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     plaintext = decrypt_text(cipher["ciphertext"], cipher["iv"], ticket.session_key)
     chat_type = message["body"].get("chat_type", "group")
     recipient = message["body"].get("recipient", "")
+    print(f"[DEBUG] CHAT_SEND received: chat_type={chat_type}, recipient={recipient}, sender={ticket.client_id}")
     
     if chat_type == "private" and not recipient:
         return Message(type="ERROR", seq=message["seq"], body={"error": "private chat requires recipient"})
@@ -114,16 +134,18 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     if chat_type == "private":
         with online_lock:
             is_recipient_online = recipient in online_users
+            print(f"[DEBUG] Private chat check: chat_type={chat_type}, recipient={recipient}, online_users={list(online_users.keys())}, is_online={is_recipient_online}")
         
         if not is_recipient_online:
-            # Recipient is offline, return ACK with notification but don't store message
-            ack_text = f"对方离线，消息未送达"
+            # Recipient is offline, store plaintext message
+            dao.store_offline_message(recipient, ticket.client_id, plaintext)
+            ack_text = "已存储，待对方上线后推送"
             dao.add_audit_log(
                 "",
                 ticket.client_id,
                 address[0],
                 "CHAT_SEND_OFFLINE",
-                content_enc=json.dumps({"recipient": recipient, "status": "offline"}, ensure_ascii=False),
+                content_enc=json.dumps({"recipient": recipient, "status": "stored"}, ensure_ascii=False),
             )
             return Message(
                 type="CHAT_ACK",
