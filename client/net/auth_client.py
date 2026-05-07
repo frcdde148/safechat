@@ -27,12 +27,8 @@ class AuthClient:
         self.service_ticket: dict[str, str] | None = None
         self.session_key_c_tgs = ""
         self.session_key_c_v = ""
-<<<<<<< HEAD
         self.session_id = ""
-        self.last_message_id = 0
-=======
         self.last_message_ids: dict[str, int] = {}
->>>>>>> origin/main
         self.private_key_pem, self.public_key_pem = generate_key_pair()
 
     def run_stage(self, stage_code: str) -> tuple[bool, str]:
@@ -203,6 +199,7 @@ class AuthClient:
                     "chat_type": item.get("chat_type", "group"),
                     "timestamp": item["timestamp"],
                     "text": text,
+                    "ciphertext": str(cipher),
                 }
             )
         return decrypted

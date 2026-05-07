@@ -21,33 +21,54 @@ from PyQt5.QtWidgets import (
 class MessageBubble(QFrame):
     """Chat bubble for self, peer, system, and security messages."""
 
-    def __init__(self, text: str, kind: str = "peer", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("messageBubble")
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.text = text
+        self.ciphertext = ciphertext
+        self.kind = kind
+        self.label = QLabel(text)
+        self.label.setWordWrap(True)
+        self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
 
         if kind == "self":
-            label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a"))
+            self.label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a"))
             layout.addStretch(1)
-            layout.addWidget(label, 0)
+            layout.addWidget(self.label, 0)
         elif kind == "system":
-            label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet(self._bubble_style("#e2e8f0", "#475569"))
+            self.label.setAlignment(Qt.AlignCenter)
+            self.label.setStyleSheet(self._bubble_style("#e2e8f0", "#475569"))
             layout.addStretch(1)
-            layout.addWidget(label, 0)
+            layout.addWidget(self.label, 0)
             layout.addStretch(1)
         elif kind == "security":
-            label.setStyleSheet(self._bubble_style("#ffedd5", "#9a3412"))
-            layout.addWidget(label, 1)
+            self.label.setStyleSheet(self._bubble_style("#ffedd5", "#9a3412"))
+            layout.addWidget(self.label, 1)
         else:
-            label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937"))
-            layout.addWidget(label, 0)
+            self.label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937"))
+            layout.addWidget(self.label, 0)
             layout.addStretch(1)
+
+    def set_display_mode(self, show_ciphertext: bool) -> None:
+        if show_ciphertext and self.ciphertext:
+            self.label.setText(self.ciphertext)
+            self.label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280") + " font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;")
+        else:
+            self.label.setText(self.text)
+            self._restore_style()
+
+    def _restore_style(self) -> None:
+        if self.kind == "self":
+            self.label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a"))
+        elif self.kind == "system":
+            self.label.setStyleSheet(self._bubble_style("#e2e8f0", "#475569"))
+        elif self.kind == "security":
+            self.label.setStyleSheet(self._bubble_style("#ffedd5", "#9a3412"))
+        else:
+            self.label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937"))
 
     @staticmethod
     def _bubble_style(background: str, color: str) -> str:
@@ -95,6 +116,9 @@ class ChatView(QWidget):
         self.message_area = QVBoxLayout()
         self.message_input = QTextEdit()
         self.send_button = QPushButton("发送")
+        self.toggle_cipher_button = QPushButton("显示密文")
+        self.show_ciphertext = False
+        self.message_bubbles: list[MessageBubble] = []
 
         self.session_type_status = StatusLine("会话类型", "群聊", "okBadge")
         self.server_status = StatusLine("连接服务器", "127.0.0.1:9000", "okBadge")
@@ -106,6 +130,7 @@ class ChatView(QWidget):
 
         self._build_ui()
         self._seed_demo_content()
+        self._refresh_cipher_toggle_ui()
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -168,8 +193,11 @@ class ChatView(QWidget):
         button_row = QHBoxLayout()
         file_button = QPushButton("文件")
         file_button.setObjectName("secondaryButton")
+        self.toggle_cipher_button.setObjectName("secondaryButton")
+        self.toggle_cipher_button.clicked.connect(self._toggle_cipher_display)
         self.send_button.clicked.connect(self._emit_message_send_requested)
         button_row.addWidget(file_button)
+        button_row.addWidget(self.toggle_cipher_button)
         button_row.addStretch(1)
         button_row.addWidget(self.send_button)
         layout.addLayout(button_row)
@@ -203,8 +231,13 @@ class ChatView(QWidget):
         layout.addStretch(1)
         return panel
 
-    def add_message(self, text: str, kind: str = "peer") -> None:
-        self.message_area.insertWidget(self.message_area.count() - 1, MessageBubble(text, kind))
+    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "") -> None:
+        bubble = MessageBubble(text, kind, ciphertext)
+        self.message_area.insertWidget(self.message_area.count() - 1, bubble)
+        if kind not in ("system", "security"):
+            self.message_bubbles.append(bubble)
+            bubble.set_display_mode(self.show_ciphertext)
+        self._refresh_cipher_toggle_ui()
 
     def clear_messages(self) -> None:
         """Remove all visible message bubbles."""
@@ -213,6 +246,33 @@ class ChatView(QWidget):
             widget = item.widget()
             if widget:
                 widget.deleteLater()
+        self.message_bubbles.clear()
+        self._refresh_cipher_toggle_ui()
+
+    def _toggle_cipher_display(self) -> None:
+        if not self._has_cipher_messages():
+            return
+        self.show_ciphertext = not self.show_ciphertext
+        for bubble in self.message_bubbles:
+            bubble.set_display_mode(self.show_ciphertext)
+        self._refresh_cipher_toggle_ui()
+
+    def _has_cipher_messages(self) -> bool:
+        return any(bool(bubble.ciphertext) for bubble in self.message_bubbles)
+
+    def _refresh_cipher_toggle_ui(self) -> None:
+        has_cipher = self._has_cipher_messages()
+        self.toggle_cipher_button.setEnabled(has_cipher)
+        if self.show_ciphertext:
+            self.toggle_cipher_button.setText("显示明文")
+            self.toggle_cipher_button.setToolTip("当前为密文模式，点击切换回明文显示")
+        else:
+            self.toggle_cipher_button.setText("显示密文")
+            self.toggle_cipher_button.setToolTip("展示消息加密后的密文")
+        if not has_cipher:
+            self.show_ciphertext = False
+            self.toggle_cipher_button.setText("显示密文")
+            self.toggle_cipher_button.setToolTip("当前无可切换的密文消息")
 
     def current_session(self) -> dict[str, str]:
         """Return selected group/private chat routing data."""

@@ -118,7 +118,6 @@ class MainWindow(QMainWindow):
             return
 
         self.chat_view.send_button.setEnabled(False)
-        self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self")
         try:
             session = self.chat_view.current_session()
             result = self._auth_client.send_chat_message(
@@ -126,7 +125,11 @@ class MainWindow(QMainWindow):
                 session["chat_type"],
                 session["recipient"],
             )
+            # 获取密文并添加消息
+            ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
+            self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self", ciphertext)
         except Exception as exc:
+            self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self")
             self.chat_view.add_message(f"安全提示：消息发送失败，{exc}", "security")
             self.chat_view.security_status.set_value("发送失败", "errorBadge")
         else:
@@ -190,4 +193,5 @@ class MainWindow(QMainWindow):
             if is_self and not include_self:
                 continue
             kind = "self" if is_self else "peer"
-            self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind)
+            ciphertext = message.get("ciphertext", "")
+            self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind, ciphertext)
