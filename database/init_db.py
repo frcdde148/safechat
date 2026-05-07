@@ -84,6 +84,18 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_active_sessions_username ON active_sessions(username);
         CREATE INDEX IF NOT EXISTS idx_active_sessions_status ON active_sessions(status);
+
+        CREATE TABLE IF NOT EXISTS offline_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            message_text TEXT NOT NULL,
+            chat_type TEXT DEFAULT 'private',
+            created_at INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending'
+        );
+        CREATE INDEX IF NOT EXISTS idx_offline_messages_recipient ON offline_messages(recipient);
+        CREATE INDEX IF NOT EXISTS idx_offline_messages_status ON offline_messages(status);
         """
     )
 

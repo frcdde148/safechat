@@ -30,6 +30,7 @@ class AuthClient:
         self.session_id = ""
         self.last_message_ids: dict[str, int] = {}
         self.private_key_pem, self.public_key_pem = generate_key_pair()
+        self.offline_messages: list[dict] = []
 
     def run_stage(self, stage_code: str) -> tuple[bool, str]:
         """Run one visible UI stage and return success plus display detail."""
@@ -120,6 +121,10 @@ class AuthClient:
         )
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)
+        
+        # Save offline messages if any
+        self.offline_messages = response["body"].get("offline_messages", [])
+        
         return self._format_exchange(message.to_dict(), response)
 
     def _explain_chat_response(self) -> str:
@@ -213,6 +218,24 @@ class AuthClient:
             users = sorted([self.username, recipient])
             return f"private:{users[0]}:{users[1]}"
         return "group:public"
+
+    def get_offline_messages(self) -> list[dict[str, Any]]:
+        """Get and decrypt offline messages received during authentication."""
+        decrypted = []
+        for msg in self.offline_messages:
+            text = decrypt_text(msg["message_cipher"], msg["iv"], self.session_key_c_v)
+            decrypted.append({
+                "id": msg["id"],
+                "sender": msg["sender"],
+                "recipient": self.username,
+                "chat_type": msg["chat_type"],
+                "timestamp": msg["created_at"],
+                "text": text,
+                "ciphertext": msg["message_cipher"],
+            })
+        # Clear offline messages after retrieving
+        self.offline_messages = []
+        return decrypted
 
     def fetch_online_users(self) -> list[dict[str, Any]]:
         """Fetch the current ChatServer online user list."""

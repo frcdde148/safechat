@@ -169,6 +169,56 @@ class SQLiteDAO:
             )
             conn.commit()
 
+    def store_offline_message(self, recipient: str, sender: str, plaintext: str) -> None:
+        """Store a message for an offline user."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO offline_messages
+                    (recipient, sender, message_text, chat_type, created_at, status)
+                VALUES (?, ?, ?, 'private', ?, 'pending')
+                """,
+                (recipient, sender, plaintext, int(time.time() * 1000)),
+            )
+            conn.commit()
+
+    def get_offline_messages(self, recipient: str) -> list[dict[str, Any]]:
+        """Get all pending offline messages for a user, ordered by creation time."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM offline_messages
+                WHERE recipient = ? AND status = 'pending'
+                ORDER BY created_at ASC
+                """,
+                (recipient,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_offline_message(self, message_id: int) -> None:
+        """Delete a specific offline message."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM offline_messages
+                WHERE id = ?
+                """,
+                (message_id,),
+            )
+            conn.commit()
+
+    def clear_offline_messages(self, recipient: str) -> None:
+        """Clear all offline messages for a user."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM offline_messages
+                WHERE recipient = ?
+                """,
+                (recipient,),
+            )
+            conn.commit()
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row

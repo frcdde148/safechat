@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QMainWindow, QStackedWidget
+from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QInputDialog, QMessageBox
 
 from client.net.auth_client import AuthClient
 from client.ui.auth_flow_view import AUTH_STAGES
@@ -42,6 +42,8 @@ class MainWindow(QMainWindow):
         self.login_view.enter_chat_requested.connect(self._enter_chat)
         self.chat_view.message_send_requested.connect(self._send_chat_message)
         self.chat_view.session_changed.connect(self._switch_chat_session)
+        self.chat_view.start_private_chat_requested.connect(self._start_private_chat)
+        self.chat_view.return_to_group_chat_requested.connect(self._return_to_group_chat)
 
     def _start_demo_auth(self, payload: dict) -> None:
         """Run a local UI authentication demo until real controllers are wired."""
@@ -108,6 +110,13 @@ class MainWindow(QMainWindow):
         self.chat_view.server_status.set_value(f"{chat_host}:{chat_port}", "okBadge")
         self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
         self.stack.setCurrentWidget(self.chat_view)
+        
+        # Display offline messages if any
+        if self._auth_client:
+            offline_messages = self._auth_client.get_offline_messages()
+            for msg in offline_messages:
+                self.chat_view.add_message(f"{msg['sender']}：{msg['text']}", "other", msg.get("ciphertext"))
+        
         self._refresh_online_users()
         self._poll_timer.start()
 
@@ -118,27 +127,34 @@ class MainWindow(QMainWindow):
             return
 
         self.chat_view.send_button.setEnabled(False)
+        session = self.chat_view.current_session()
+        
         try:
-            session = self.chat_view.current_session()
             result = self._auth_client.send_chat_message(
                 text,
                 session["chat_type"],
                 session["recipient"],
             )
-            # 获取密文并添加消息
+            self.chat_view.message_input.clear()
+            
+            # 添加发送的消息（包含密文）
             ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
             self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self", ciphertext)
+            ack = result.get("ack", "")
+            if ack:
+                self.chat_view.add_message(f"安全回执：{ack}", "security")
+                if "对方离线" in ack:
+                    self.chat_view.security_status.set_value("对方离线", "warnBadge")
+                else:
+                    self.chat_view.security_status.set_value("加密与签名已通过", "okBadge")
+            else:
+                self.chat_view.add_message("安全回执：未知响应", "security")
         except Exception as exc:
-            self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self")
             self.chat_view.add_message(f"安全提示：消息发送失败，{exc}", "security")
             self.chat_view.security_status.set_value("发送失败", "errorBadge")
-        else:
-            self.chat_view.message_input.clear()
-            self.chat_view.add_message(f"安全回执：{result['ack']}", "security")
-            self.chat_view.security_status.set_value("加密与签名已通过", "okBadge")
-            self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
         finally:
             self.chat_view.send_button.setEnabled(True)
+            self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
 
     def _poll_chat_messages(self) -> None:
         if not self._auth_client or self.stack.currentWidget() is not self.chat_view:
@@ -195,3 +211,53 @@ class MainWindow(QMainWindow):
             kind = "self" if is_self else "peer"
             ciphertext = message.get("ciphertext", "")
             self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind, ciphertext)
+
+    def _start_private_chat(self) -> None:
+        """Handle starting a private chat with a manually entered username."""
+        username, ok = QInputDialog.getText(self, "发起私聊", "请输入对方用户名：")
+        if not ok or not username.strip():
+            return
+        
+        username = username.strip()
+        if username == self._auth_client.username:
+            QMessageBox.warning(self, "警告", "不能与自己发起私聊")
+            return
+        
+        # Set current session to private chat
+        self.chat_view.set_current_session("private", username)
+        
+        # Clear messages and switch to private chat
+        self.chat_view.clear_messages()
+        self.chat_view.session_type_status.set_value(f"私聊 {username}", "okBadge")
+        self.chat_view.add_message(f"系统通知：已切换到私聊 {username}", "system")
+        
+        if not self._auth_client:
+            return
+        
+        self._auth_client.reset_session_cursor("private", username)
+        try:
+            messages = self._auth_client.poll_chat_messages("private", username)
+        except Exception as exc:
+            self.chat_view.security_status.set_value("轮询失败", "errorBadge")
+            self.chat_view.add_message(f"安全提示：拉取私聊消息失败，{exc}", "security")
+            return
+        self._display_chat_messages(messages, include_self=True)
+
+    def _return_to_group_chat(self) -> None:
+        """Return to group chat from private chat."""
+        # Set current session to group chat
+        self.chat_view.set_current_session("group", "")
+        
+        self.chat_view.clear_messages()
+        self.chat_view.session_type_status.set_value("群聊", "okBadge")
+        self.chat_view.add_message("系统通知：已切换到群聊大厅", "system")
+        if not self._auth_client:
+            return
+        self._auth_client.reset_session_cursor("group", "")
+        try:
+            messages = self._auth_client.poll_chat_messages("group", "")
+        except Exception as exc:
+            self.chat_view.security_status.set_value("轮询失败", "errorBadge")
+            self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
+            return
+        self._display_chat_messages(messages, include_self=True)
