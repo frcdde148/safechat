@@ -63,6 +63,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "tgs_port": response.tgs_port,
         "version": PROTOCOL_VERSION,
         "request_id": str(uuid.uuid4()),
+        "session_id": response.session_id,
     }
     
     # Sign the response

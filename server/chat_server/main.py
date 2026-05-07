@@ -145,7 +145,6 @@ def _verify_signed_chat_message(message: dict) -> bool:
 def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     """Return encrypted group-chat messages newer than last_seen_id."""
     ticket = _decrypt_valid_service_ticket(message)
-    _mark_user_online(ticket.client_id, address[0])
     last_seen_id = int(message["body"].get("last_seen_id", 0))
     chat_type = message["body"].get("chat_type", "group")
     recipient = message["body"].get("recipient", "")
@@ -184,7 +183,6 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
 def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
     """Return the current online user list."""
     ticket = _decrypt_valid_service_ticket(message)
-    _mark_user_online(ticket.client_id, address[0])
     users = _current_online_users()
     dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST", content_enc=str(len(users)))
     return Message(
@@ -227,9 +225,6 @@ def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str)
         return message_id
 
 
-<<<<<<< HEAD
-def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:
-=======
 def _session_key(sender: str, chat_type: str, recipient: str) -> str:
     if chat_type == "private":
         users = sorted([sender, recipient])
@@ -243,8 +238,7 @@ def _can_read_message(username: str, message: dict) -> bool:
     return True
 
 
-def _mark_user_online(username: str, client_ip: str) -> None:
->>>>>>> origin/main
+def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:
     with online_lock:
         online_users[username] = {
             "username": username,

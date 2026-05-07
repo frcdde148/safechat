@@ -26,6 +26,7 @@ class ASResponse:
     error: str = ""
     version: str = "safechat-kerberos-v4-ext"
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = ""
 
 
 class AuthenticationServer:
@@ -71,6 +72,18 @@ class AuthenticationServer:
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "Invalid credentials")
             return ASResponse(success=False, error="invalid username or password")
         
+        # Check for existing active session (Single Sign-On control)
+        existing_session = self.dao.get_active_session(username)
+        if existing_session:
+            existing_ip = existing_session["client_ip"]
+            if existing_ip != client_addr:
+                self._log_audit("", username, client_addr, "LOGIN_DENIED_DUPLICATE", 
+                                f"User {username} already logged in from {existing_ip}")
+                return ASResponse(
+                    success=False, 
+                    error=f"user {username} is already logged in from {existing_ip}"
+                )
+        
         # Get TGS service configuration
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         if not tgs_service:
@@ -81,8 +94,12 @@ class AuthenticationServer:
         tgt = self._issue_tgt(username, client_addr, session_key)
         encrypted_tgt = encrypt_model(tgt, tgs_service["service_key"])
         
+        # Generate session ID and create session record
+        session_id = secrets.token_hex(32)
+        self.dao.create_session(username, session_id, client_addr, tgt.issued_at, tgt.expires_at)
+        
         # Log successful authentication
-        self._log_audit("", username, client_addr, "LOGIN_AS_OK", 
+        self._log_audit(session_id, username, client_addr, "LOGIN_AS_OK", 
                         f"User {username} authenticated, TGT issued")
         
         return ASResponse(
@@ -92,6 +109,7 @@ class AuthenticationServer:
             ticket_tgt=encrypted_tgt,
             tgs_host=tgs_service["service_host"],
             tgs_port=tgs_service["service_port"],
+            session_id=session_id,
         )
     
     def _issue_tgt(self, client_id: str, client_addr: str, session_key: str) -> Ticket:
