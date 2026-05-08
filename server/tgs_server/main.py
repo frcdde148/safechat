@@ -35,9 +35,14 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     ticket_tgt = message["body"].get("ticket_tgt", {})
     authenticator = message["body"].get("authenticator", {})
     client_addr = address[0]
+    message_body = message.get("body", {})
+    message_hmac = message.get("hmac", "")
+    message_sig = message.get("sig", "")
+    message_pubkey = message.get("pubkey", "")
     
     # Request service ticket
-    response = tgs_server.request_service_ticket(ticket_tgt, authenticator, client_addr)
+    response = tgs_server.request_service_ticket(ticket_tgt, authenticator, client_addr, 
+                                                 message_body, message_hmac, message_sig, message_pubkey)
     
     if not response.success:
         return {
@@ -56,7 +61,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     # Build response body with ALL required fields
     response_body = {
         "client_id": response.client_id,
-        "session_key_c_v": response.session_key_c_v,
+        "encrypted_session_key": response.encrypted_session_key,
         "service_ticket": response.service_ticket,
         "chat_host": response.chat_host,
         "chat_port": response.chat_port,

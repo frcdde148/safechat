@@ -30,6 +30,7 @@ DATA_TYPES = {
     "FILE_RECV_DATA",
     "FILE_ACK",
     "FILE_SEND_ACK",
+    "IMAGE_SEND",
 }
 
 ALL_TYPES = CONTROL_TYPES | AUTH_TYPES | DATA_TYPES
@@ -40,6 +41,7 @@ SIGNED_TYPES = {
     "CHAT_SEND",
     "CHAT_RECV",
     "CHAT_ACK",
+    "IMAGE_SEND",
 }
 
 TYPE_LAYER = {

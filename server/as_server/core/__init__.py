@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from common.crypto.aes import encrypt_text
+from common.crypto.des import encrypt_text
 from common.crypto.rsa_sign import generate_key_pair, sign_text
 from common.models.tickets import Ticket, encrypt_model, issue_ticket
 from common.protocol.security import body_digest
@@ -19,7 +19,7 @@ class ASResponse:
     """AS server response structure."""
     success: bool
     client_id: str = ""
-    session_key_c_tgs: str = ""
+    encrypted_session_key: dict[str, str] = field(default_factory=dict)
     ticket_tgt: dict[str, str] = field(default_factory=dict)
     tgs_host: str = ""
     tgs_port: int = 0
@@ -50,29 +50,36 @@ class AuthenticationServer:
         self.dao = dao or SQLiteDAO()
         self._private_key, self._public_key = generate_key_pair()
     
-    def authenticate(self, username: str, password: str, client_addr: str) -> ASResponse:
+    def authenticate(self, username: str, client_addr: str, message_body: dict, message_hmac: str, message_sig: str, message_pubkey: str) -> ASResponse:
         """
         Authenticate user and issue TGT.
         
         Args:
             username: User's username
-            password: User's password
             client_addr: Client IP address
+            message_body: Original message body for verification
+            message_hmac: HMAC digest from client
+            message_sig: RSA signature from client
+            message_pubkey: Client's public key
             
         Returns:
-            ASResponse containing TGT and session key on success
+            ASResponse containing TGT and encrypted session key on success
         """
-        # Check IP ban status
+        from common.protocol.security import verify_body_signature
+        
         if self.dao.is_ip_banned(client_addr):
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP banned")
             return ASResponse(success=False, error="client IP is banned")
         
-        # Verify credentials
-        if not self.dao.verify_user_password(username, password):
-            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "Invalid credentials")
+        user = self.dao.get_user(username)
+        if not user:
+            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "User not found")
             return ASResponse(success=False, error="invalid username or password")
         
-        # Check for existing active session (Single Sign-On control)
+        if not verify_body_signature(message_body, message_hmac, message_sig, message_pubkey):
+            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "Invalid signature")
+            return ASResponse(success=False, error="invalid signature")
+        
         existing_session = self.dao.get_active_session(username)
         if existing_session:
             existing_ip = existing_session["client_ip"]
@@ -84,28 +91,27 @@ class AuthenticationServer:
                     error=f"user {username} is already logged in from {existing_ip}"
                 )
         
-        # Get TGS service configuration
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         if not tgs_service:
             return ASResponse(success=False, error="TGS service is not configured")
         
-        # Generate session key and TGT
         session_key = secrets.token_hex(16)
         tgt = self._issue_tgt(username, client_addr, session_key)
         encrypted_tgt = encrypt_model(tgt, tgs_service["service_key"])
         
-        # Generate session ID and create session record
+        password_plain = user["password_plain"]
+        encrypted_session_key = encrypt_text(session_key, password_plain)
+        
         session_id = secrets.token_hex(32)
         self.dao.create_session(username, session_id, client_addr, tgt.issued_at, tgt.expires_at)
         
-        # Log successful authentication
         self._log_audit(session_id, username, client_addr, "LOGIN_AS_OK", 
                         f"User {username} authenticated, TGT issued")
         
         return ASResponse(
             success=True,
             client_id=username,
-            session_key_c_tgs=session_key,
+            encrypted_session_key=encrypted_session_key,
             ticket_tgt=encrypted_tgt,
             tgs_host=tgs_service["service_host"],
             tgs_port=tgs_service["service_port"],

@@ -32,6 +32,17 @@ class AuthClient:
         self.private_key_pem, self.public_key_pem = generate_key_pair()
         self.offline_messages: list[dict] = []
 
+    def reset_session(self) -> None:
+        """Reset session state for re-login."""
+        self.seq = 1
+        self.tgt = None
+        self.service_ticket = None
+        self.session_key_c_tgs = ""
+        self.session_key_c_v = ""
+        self.session_id = ""
+        self.last_message_ids = {}
+        self.offline_messages = []
+
     def run_stage(self, stage_code: str) -> tuple[bool, str]:
         """Run one visible UI stage and return success plus display detail."""
         stage_handlers = {
@@ -48,19 +59,31 @@ class AuthClient:
             return False, f"认证阶段失败：{exc}"
 
     def _request_tgt(self) -> str:
+        body = {
+            "username": self.username,
+            "tgs_id": "tgs_server",
+        }
+        digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
             type="C_AS_REQ",
             seq=self._next_seq(),
-            body={
-                "username": self.username,
-                "password": self.password,
-                "tgs_id": "tgs_server",
-            },
+            body=body,
+            hmac=digest,
+            sig=signature,
+            pubkey=self.public_key_pem,
         )
         response = request(self.as_host, self.as_port, message)
         self._raise_on_error(response)
-        self.session_key_c_tgs = response["body"]["session_key_c_tgs"]
-        self.tgt = response["body"]["ticket_tgt"]
+        
+        encrypted_session_key = response["body"]["encrypted_session_key"]
+        encrypted_tgt = response["body"]["ticket_tgt"]
+        
+        self.session_key_c_tgs = decrypt_text(
+            encrypted_session_key["ciphertext"],
+            encrypted_session_key["iv"],
+            self.password
+        )
+        self.tgt = encrypted_tgt
         self.session_id = response["body"].get("session_id", "")
         return self._format_exchange(message.to_dict(), response)
 
@@ -78,18 +101,29 @@ class AuthClient:
         if not self.tgt:
             raise ValueError("missing TGT; run C_AS_REQ first")
         authenticator = encrypt_model(issue_authenticator(self.username, ""), self.session_key_c_tgs)
+        body = {
+            "service_id": "chat_server",
+            "ticket_tgt": self.tgt,
+            "authenticator": authenticator,
+        }
+        digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
             type="C_TGS_REQ",
             seq=self._next_seq(),
-            body={
-                "service_id": "chat_server",
-                "ticket_tgt": self.tgt,
-                "authenticator": authenticator,
-            },
+            body=body,
+            hmac=digest,
+            sig=signature,
+            pubkey=self.public_key_pem,
         )
         response = request(self.tgs_host, self.tgs_port, message)
         self._raise_on_error(response)
-        self.session_key_c_v = response["body"]["session_key_c_v"]
+        
+        encrypted_session_key = response["body"]["encrypted_session_key"]
+        self.session_key_c_v = decrypt_text(
+            encrypted_session_key["ciphertext"],
+            encrypted_session_key["iv"],
+            self.session_key_c_tgs
+        )
         self.service_ticket = response["body"]["service_ticket"]
         self.chat_host = response["body"].get("chat_host", self.chat_host)
         self.chat_port = response["body"].get("chat_port", self.chat_port)
@@ -173,6 +207,63 @@ class AuthClient:
             "ack": plaintext_ack,
         }
 
+    def send_image(self, file_path: str, progress_callback=None) -> dict[str, Any]:
+        """Send an encrypted image to chat server."""
+        import os
+        from base64 import b64encode
+        
+        if not self.service_ticket or not self.session_key_c_v:
+            raise ValueError("chat session is not authenticated")
+        
+        # Read image file
+        if progress_callback:
+            progress_callback(35)
+        with open(file_path, "rb") as f:
+            image_data = f.read()
+        
+        # Limit image size to 10MB
+        max_size = 10 * 1024 * 1024
+        if len(image_data) > max_size:
+            return {"success": False, "error": "图片大小超过限制（最大10MB）"}
+        
+        # Encode to base64 and encrypt
+        if progress_callback:
+            progress_callback(40)
+        image_base64 = b64encode(image_data).decode()
+        
+        if progress_callback:
+            progress_callback(50)
+        image_cipher = encrypt_text(image_base64, self.session_key_c_v)
+        
+        if progress_callback:
+            progress_callback(60)
+        
+        body = {
+            "service_ticket": self.service_ticket,
+            "image_cipher": image_cipher,
+            "file_name": os.path.basename(file_path),
+            "file_size": len(image_data),
+            "chat_type": "group",
+            "recipient": "",
+        }
+        digest, signature = sign_body(body, self.private_key_pem)
+        message = Message(
+            type="IMAGE_SEND",
+            seq=self._next_seq(),
+            body=body,
+            hmac=digest,
+            sig=signature,
+            pubkey=self.public_key_pem,
+        )
+        if progress_callback:
+            progress_callback(70)
+        response = request(self.chat_host, self.chat_port, message, timeout=60.0)
+        if progress_callback:
+            progress_callback(75)
+        self._raise_on_error(response)
+        
+        return {"success": True, "file_name": os.path.basename(file_path)}
+
     def poll_chat_messages(self, chat_type: str = "group", recipient: str = "") -> list[dict[str, Any]]:
         """Fetch and decrypt messages for one group/private session."""
         if not self.service_ticket or not self.session_key_c_v:
@@ -188,7 +279,7 @@ class AuthClient:
                 "recipient": recipient,
             },
         )
-        response = request(self.chat_host, self.chat_port, message)
+        response = request(self.chat_host, self.chat_port, message, timeout=30.0)
         self._raise_on_error(response)
         decrypted = []
         for item in response["body"].get("messages", []):
@@ -196,17 +287,20 @@ class AuthClient:
             text = decrypt_text(cipher["ciphertext"], cipher["iv"], self.session_key_c_v)
             message_id = int(item["id"])
             self.last_message_ids[session_key] = max(self.last_message_ids.get(session_key, 0), message_id)
-            decrypted.append(
-                {
-                    "id": message_id,
-                    "sender": item["sender"],
-                    "recipient": item.get("recipient", ""),
-                    "chat_type": item.get("chat_type", "group"),
-                    "timestamp": item["timestamp"],
-                    "text": text,
-                    "ciphertext": str(cipher),
-                }
-            )
+            msg_data = {
+                "id": message_id,
+                "sender": item["sender"],
+                "recipient": item.get("recipient", ""),
+                "chat_type": item.get("chat_type", "group"),
+                "timestamp": item["timestamp"],
+                "text": text,
+                "ciphertext": str(cipher),
+            }
+            # Include image data if present
+            if item.get("image_data"):
+                msg_data["image_data"] = item["image_data"]
+                msg_data["file_name"] = item.get("file_name", "")
+            decrypted.append(msg_data)
         return decrypted
 
     def reset_session_cursor(self, chat_type: str = "group", recipient: str = "") -> None:

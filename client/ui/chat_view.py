@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QComboBox,
     QFrame,
@@ -10,6 +13,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QTextEdit,
@@ -21,18 +25,35 @@ from PyQt5.QtWidgets import (
 class MessageBubble(QFrame):
     """Chat bubble for self, peer, system, and security messages."""
 
-    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("messageBubble")
         self.text = text
         self.ciphertext = ciphertext
         self.kind = kind
-        self.label = QLabel(text)
-        self.label.setWordWrap(True)
-        self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-
+        self.image_data = image_data
+        self.file_name = file_name
+        self.show_cipher = False
+        
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
+
+        if image_data:
+            # Show image
+            self.label = QLabel()
+            pixmap = QPixmap()
+            pixmap.loadFromData(base64.b64decode(image_data))
+            # Scale image to fit (max 300px width)
+            if pixmap.width() > 300:
+                pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+            self.label.setPixmap(pixmap)
+            self.label.setWordWrap(True)
+            self.label.setAlignment(Qt.AlignCenter)
+        else:
+            # Show text
+            self.label = QLabel(text)
+            self.label.setWordWrap(True)
+            self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         if kind == "self":
             self.label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a"))
@@ -53,12 +74,14 @@ class MessageBubble(QFrame):
             layout.addStretch(1)
 
     def set_display_mode(self, show_ciphertext: bool) -> None:
-        if show_ciphertext and self.ciphertext:
-            self.label.setText(self.ciphertext)
-            self.label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280") + " font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;")
-        else:
-            self.label.setText(self.text)
-            self._restore_style()
+        self.show_cipher = show_ciphertext
+        if not self.image_data:
+            if show_ciphertext and self.ciphertext:
+                self.label.setText(self.ciphertext)
+                self.label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280") + " font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;")
+            else:
+                self.label.setText(self.text)
+                self._restore_style()
 
     def _restore_style(self) -> None:
         if self.kind == "self":
@@ -108,6 +131,8 @@ class ChatView(QWidget):
     session_changed = pyqtSignal()
     start_private_chat_requested = pyqtSignal()
     return_to_group_chat_requested = pyqtSignal()
+    relogin_requested = pyqtSignal()
+    image_send_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -139,6 +164,8 @@ class ChatView(QWidget):
         self._refresh_cipher_toggle_ui()
         self.start_private_button.clicked.connect(self.start_private_chat_requested.emit)
         self.group_chat_button.clicked.connect(self.return_to_group_chat_requested.emit)
+        self.relogin_button.clicked.connect(self._on_relogin_clicked)
+        self.image_button.clicked.connect(self.image_send_requested.emit)
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -170,6 +197,10 @@ class ChatView(QWidget):
         self.start_private_button = QPushButton("发起私聊")
         self.start_private_button.setObjectName("secondaryButton")
         layout.addWidget(self.start_private_button)
+
+        self.relogin_button = QPushButton("重新登录")
+        self.relogin_button.setObjectName("secondaryButton")
+        layout.addWidget(self.relogin_button)
         return panel
 
     def _center_panel(self) -> QFrame:
@@ -197,19 +228,29 @@ class ChatView(QWidget):
 
         self.message_input.setPlaceholderText("输入消息")
         self.message_input.setFixedHeight(76)
+        self.message_input.textChanged.connect(self._update_send_button_state)
         layout.addWidget(self.message_input)
 
+        # Upload progress bar
+        self.upload_progress = QProgressBar()
+        self.upload_progress.setFixedHeight(8)
+        self.upload_progress.setVisible(False)
+        layout.addWidget(self.upload_progress)
+
         button_row = QHBoxLayout()
-        file_button = QPushButton("文件")
-        file_button.setObjectName("secondaryButton")
+        self.image_button = QPushButton("图片")
+        self.image_button.setObjectName("secondaryButton")
         self.toggle_cipher_button.setObjectName("secondaryButton")
         self.toggle_cipher_button.clicked.connect(self._toggle_cipher_display)
         self.send_button.clicked.connect(self._emit_message_send_requested)
-        button_row.addWidget(file_button)
+        button_row.addWidget(self.image_button)
         button_row.addWidget(self.toggle_cipher_button)
         button_row.addStretch(1)
         button_row.addWidget(self.send_button)
         layout.addLayout(button_row)
+        
+        # Initialize send button state
+        self._update_send_button_state()
         return panel
 
     def _right_panel(self) -> QFrame:
@@ -240,8 +281,8 @@ class ChatView(QWidget):
         layout.addStretch(1)
         return panel
 
-    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "") -> None:
-        bubble = MessageBubble(text, kind, ciphertext)
+    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "") -> None:
+        bubble = MessageBubble(text, kind, ciphertext, image_data, file_name)
         self.message_area.insertWidget(self.message_area.count() - 1, bubble)
         if kind not in ("system", "security"):
             self.message_bubbles.append(bubble)
@@ -319,6 +360,33 @@ class ChatView(QWidget):
         text = self.message_input.toPlainText().strip()
         if text:
             self.message_send_requested.emit(text)
+
+    def _on_relogin_clicked(self) -> None:
+        self.relogin_requested.emit()
+
+    def _update_send_button_state(self) -> None:
+        """Update send button state based on input content."""
+        has_text = bool(self.message_input.toPlainText().strip())
+        self.send_button.setEnabled(has_text)
+        if has_text:
+            self.send_button.setObjectName("primaryButton")
+        else:
+            self.send_button.setObjectName("disabledButton")
+        self.send_button.style().unpolish(self.send_button)
+        self.send_button.style().polish(self.send_button)
+
+    def show_upload_progress(self) -> None:
+        """Show upload progress bar."""
+        self.upload_progress.setVisible(True)
+        self.upload_progress.setValue(0)
+
+    def set_upload_progress(self, value: int) -> None:
+        """Set upload progress value (0-100)."""
+        self.upload_progress.setValue(value)
+
+    def hide_upload_progress(self) -> None:
+        """Hide upload progress bar."""
+        self.upload_progress.setVisible(False)
 
     def _seed_demo_content(self) -> None:
         self.add_message("系统通知：已进入群聊", "system")
