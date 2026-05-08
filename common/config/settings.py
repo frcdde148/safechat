@@ -33,6 +33,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "database": {
         "path": "database/chatroom.db",
+        "as_path": "database/as.db",
+        "tgs_path": "database/tgs.db",
+        "chat_path": "database/chat.db",
     },
     "logs": {
         "auth_log": "logs/auth.log",
@@ -58,9 +61,15 @@ def load_settings(path: Path | None = None) -> dict[str, Any]:
     return settings
 
 
-def database_path() -> Path:
-    """Return the configured SQLite database path."""
-    raw_path = Path(load_settings()["database"]["path"])
+def database_path(role: str = "default") -> Path:
+    """Return the configured SQLite database path for a service role."""
+    database = load_settings()["database"]
+    key = {
+        "as": "as_path",
+        "tgs": "tgs_path",
+        "chat": "chat_path",
+    }.get(role, "path")
+    raw_path = Path(database.get(key) or database["path"])
     return raw_path if raw_path.is_absolute() else PROJECT_ROOT / raw_path
 
 

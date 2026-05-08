@@ -18,7 +18,10 @@
     "service_key": "demo-chat-key"
   },
   "database": {
-    "path": "database/chatroom.db"
+    "path": "database/chatroom.db",
+    "as_path": "database/as.db",
+    "tgs_path": "database/tgs.db",
+    "chat_path": "database/chat.db"
   },
   "logs": {
     "auth_log": "logs/auth.log",

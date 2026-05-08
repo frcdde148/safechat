@@ -19,6 +19,9 @@
 - `host`：服务对外公布的访问地址。四机部署时填该服务所在主机的局域网 IP。
 - `port`：服务端口。
 - `service_key`：TGS/ChatServer 的服务密钥。所有服务器数据库必须使用同一组值。
+- `database.as_path`：AS 使用的 SQLite 数据库，保存用户、登录会话、AS 审计。
+- `database.tgs_path`：TGS 使用的 SQLite 数据库，保存服务密钥与 TGS 审计。
+- `database.chat_path`：ChatServer 使用的 SQLite 数据库，保存聊天记录、离线消息、聊天审计。
 
 四机示例：
 
@@ -43,16 +46,42 @@
     "service_key": "demo-chat-key"
   },
   "database": {
-    "path": "database/chatroom.db"
+    "path": "database/chatroom.db",
+    "as_path": "database/as.db",
+    "tgs_path": "database/tgs.db",
+    "chat_path": "database/chat.db"
   }
 }
 ```
 
-修改 `settings.json` 后，重新运行：
+修改 `settings.json` 后，本机开发可一次初始化全部数据库：
 
 ```bash
-python -m database.init_db
+python -m database.init_db --role all
 ```
 
-`init_db` 会把 `services` 表中的 TGS 和 ChatServer 地址更新为配置文件里的
-`host`/`port`，避免客户端认证后仍跳转到旧地址。
+四机部署时，每台服务端只初始化自己的数据库：
+
+```bash
+# Host-A: AS
+python -m database.init_db --role as
+
+# Host-B: TGS
+python -m database.init_db --role tgs
+
+# Host-C: ChatServer
+python -m database.init_db --role chat
+```
+
+客户端机器不需要初始化数据库。
+
+`init_db` 按角色初始化：
+
+- AS 数据库写入用户、TGS 服务地址和 `tgs_server.service_key`。
+- TGS 数据库写入 TGS/ChatServer 服务地址与服务密钥。
+- ChatServer 数据库写入 ChatServer 服务密钥、离线消息表、聊天记录表。
+
+独立数据库部署时必须保持以下静态密钥一致：
+
+- AS 与 TGS 的 `tgs_server.service_key` 一致。
+- TGS 与 ChatServer 的 `chat_server.service_key` 一致。
