@@ -69,10 +69,6 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "request_id": str(uuid.uuid4()),
     }
     
-    # Sign the response
-    digest, signature = tgs_server.sign_response(response_body)
-    
-    # Return signed response as dict
     return {
         "type": "TGS_C_REP",
         "seq": message["seq"],
@@ -81,9 +77,9 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "v": 1,
         "ts": message.get("ts", 0),
         "nonce": message.get("nonce", ""),
-        "hmac": digest,
-        "sig": signature,
-        "pubkey": tgs_server.get_public_key(),
+        "hmac": "",
+        "sig": "",
+        "pubkey": "",
     }
 
 

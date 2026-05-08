@@ -7,6 +7,7 @@ from typing import Any
 
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.rsa_sign import generate_key_pair
+from common.crypto.sha256 import salted_password_hash
 from common.models.tickets import encrypt_model, issue_authenticator
 from common.protocol.message import Message
 from common.protocol.security import sign_body
@@ -20,8 +21,10 @@ class AuthClient:
         self.username = payload["username"]
         self.password = payload["password"]
         self.as_host, self.as_port = payload["as"]
-        self.tgs_host, self.tgs_port = payload["tgs"]
-        self.chat_host, self.chat_port = payload["chat"]
+        self.tgs_host = ""
+        self.tgs_port = 0
+        self.chat_host = ""
+        self.chat_port = 0
         self.seq = 1
         self.tgt: dict[str, str] | None = None
         self.service_ticket: dict[str, str] | None = None
@@ -30,6 +33,8 @@ class AuthClient:
         self.session_key_c_v = ""
         self.encrypted_session_key_c_v: dict[str, str] | None = None  # 保存加密的 session_key
         self.session_id = ""
+        self.salt = ""
+        self.client_key = ""
         self.last_message_ids: dict[str, int] = {}
         self.private_key_pem, self.public_key_pem = generate_key_pair()
         self.offline_messages: list[dict] = []
@@ -42,6 +47,8 @@ class AuthClient:
         self.session_key_c_tgs = ""
         self.session_key_c_v = ""
         self.session_id = ""
+        self.salt = ""
+        self.client_key = ""
         self.last_message_ids = {}
         self.offline_messages = []
 
@@ -65,30 +72,33 @@ class AuthClient:
             "username": self.username,
             "tgs_id": "tgs_server",
         }
-        digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
             type="C_AS_REQ",
             seq=self._next_seq(),
             body=body,
-            hmac=digest,
-            sig=signature,
-            pubkey=self.public_key_pem,
         )
         response = request(self.as_host, self.as_port, message)
         self._raise_on_error(response)
         
-        encrypted_session_key = response["body"]["encrypted_session_key"]
+        encrypted_session_key = response["body"].get("client_part", response["body"]["encrypted_session_key"])
         encrypted_tgt = response["body"]["ticket_tgt"]
+        self.salt = response["body"]["salt"]
+        self.client_key = salted_password_hash(self.password, self.salt)
         
         # 保存加密的 session_key
         self.encrypted_session_key_c_tgs = encrypted_session_key
         
-        self.session_key_c_tgs = decrypt_text(
-            encrypted_session_key["ciphertext"],
-            encrypted_session_key["iv"],
-            self.password
-        )
+        try:
+            self.session_key_c_tgs = decrypt_text(
+                encrypted_session_key["ciphertext"],
+                encrypted_session_key["iv"],
+                self.client_key,
+            )
+        except Exception as exc:
+            raise ValueError("密码错误，无法用本地派生的长期密钥 Kc 解密 AS 响应") from exc
         self.tgt = encrypted_tgt
+        self.tgs_host = response["body"]["tgs_host"]
+        self.tgs_port = int(response["body"]["tgs_port"])
         self.session_id = response["body"].get("session_id", "")
         return self._format_exchange(message.to_dict(), response)
 
@@ -97,7 +107,9 @@ class AuthClient:
             {
                 "client_saved": {
                     "encrypted_session_key": self.encrypted_session_key_c_tgs,
+                    "salt": self.salt,
                     "ticket_tgt": self.tgt,
+                    "tgs_server": f"{self.tgs_host}:{self.tgs_port}",
                 }
             }
         )
@@ -111,14 +123,10 @@ class AuthClient:
             "ticket_tgt": self.tgt,
             "authenticator": authenticator,
         }
-        digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
             type="C_TGS_REQ",
             seq=self._next_seq(),
             body=body,
-            hmac=digest,
-            sig=signature,
-            pubkey=self.public_key_pem,
         )
         response = request(self.tgs_host, self.tgs_port, message)
         self._raise_on_error(response)
@@ -158,14 +166,10 @@ class AuthClient:
             "authenticator": authenticator,
             "session_id": self.session_id,
         }
-        digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
             type="C_V_REQ",
             seq=self._next_seq(),
             body=body,
-            hmac=digest,
-            sig=signature,
-            pubkey=self.public_key_pem,
         )
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)
@@ -229,16 +233,16 @@ class AuthClient:
         if not self.service_ticket or not self.session_key_c_v:
             raise ValueError("chat session is not authenticated")
         
-        # Read image file
+        # Read and compress image file before encryption. Large raw photos are slow
+        # after Base64 + JSON + DES, so keep chat images at a practical display size.
         if progress_callback:
-            progress_callback(35, "正在读取文件...")
-        with open(file_path, "rb") as f:
-            image_data = f.read()
+            progress_callback(35, "正在压缩图片...")
+        image_data, output_name, original_size = self._prepare_image_payload(file_path)
         
         # Limit image size to 10MB
         max_size = 10 * 1024 * 1024
         if len(image_data) > max_size:
-            return {"success": False, "error": "图片大小超过限制（最大10MB）"}
+            return {"success": False, "error": "压缩后图片仍超过限制（最大10MB）"}
         
         # Encode to base64 and encrypt
         if progress_callback:
@@ -255,8 +259,9 @@ class AuthClient:
         body = {
             "service_ticket": self.service_ticket,
             "image_cipher": image_cipher,
-            "file_name": os.path.basename(file_path),
+            "file_name": output_name,
             "file_size": len(image_data),
+            "original_size": original_size,
             "chat_type": "group",
             "recipient": "",
         }
@@ -276,7 +281,45 @@ class AuthClient:
             progress_callback(75, "等待服务器响应...")
         self._raise_on_error(response)
         
-        return {"success": True, "file_name": os.path.basename(file_path)}
+        return {"success": True, "file_name": output_name}
+
+    @staticmethod
+    def _prepare_image_payload(file_path: str) -> tuple[bytes, str, int]:
+        """Return a compressed image payload, output filename, and original size."""
+        import os
+        from io import BytesIO
+
+        with open(file_path, "rb") as file:
+            original_data = file.read()
+
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            return original_data, os.path.basename(file_path), len(original_data)
+
+        max_side = 1280
+        try:
+            with Image.open(file_path) as image:
+                image = ImageOps.exif_transpose(image)
+                image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+                has_alpha = image.mode in ("RGBA", "LA") or (
+                    image.mode == "P" and "transparency" in image.info
+                )
+                buffer = BytesIO()
+                if has_alpha:
+                    image.save(buffer, format="PNG", optimize=True)
+                    extension = ".png"
+                else:
+                    if image.mode != "RGB":
+                        image = image.convert("RGB")
+                    image.save(buffer, format="JPEG", quality=75, optimize=True, progressive=True)
+                    extension = ".jpg"
+                compressed = buffer.getvalue()
+        except Exception:
+            return original_data, os.path.basename(file_path), len(original_data)
+
+        base_name, _ = os.path.splitext(os.path.basename(file_path))
+        return compressed, f"{base_name}_safechat{extension}", len(original_data)
 
     def poll_chat_messages(self, chat_type: str = "group", recipient: str = "") -> list[dict[str, Any]]:
         """Fetch and decrypt messages for one group/private session."""

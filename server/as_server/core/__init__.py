@@ -21,6 +21,7 @@ class ASResponse:
     client_id: str = ""
     encrypted_session_key: dict[str, str] = field(default_factory=dict)
     ticket_tgt: dict[str, str] = field(default_factory=dict)
+    salt: str = ""
     tgs_host: str = ""
     tgs_port: int = 0
     error: str = ""
@@ -34,7 +35,7 @@ class AuthenticationServer:
     Authentication Server (AS) - Kerberos V4 extended with digital signatures.
     
     Responsibilities:
-    1. Verify user credentials (username/password)
+    1. Locate the user's long-term key by username
     2. Issue Ticket Granting Tickets (TGT)
     3. Generate session keys (Kc,tgs)
     4. Sign responses with RSA for non-repudiation
@@ -50,7 +51,15 @@ class AuthenticationServer:
         self.dao = dao or SQLiteDAO()
         self._private_key, self._public_key = generate_key_pair()
     
-    def authenticate(self, username: str, client_addr: str, message_body: dict, message_hmac: str, message_sig: str, message_pubkey: str) -> ASResponse:
+    def authenticate(
+        self,
+        username: str,
+        client_addr: str,
+        message_body: dict,
+        message_hmac: str = "",
+        message_sig: str = "",
+        message_pubkey: str = "",
+    ) -> ASResponse:
         """
         Authenticate user and issue TGT.
         
@@ -65,8 +74,6 @@ class AuthenticationServer:
         Returns:
             ASResponse containing TGT and encrypted session key on success
         """
-        from common.protocol.security import verify_body_signature
-        
         if self.dao.is_ip_banned(client_addr):
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP banned")
             return ASResponse(success=False, error="client IP is banned")
@@ -75,10 +82,6 @@ class AuthenticationServer:
         if not user:
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "User not found")
             return ASResponse(success=False, error="invalid username or password")
-        
-        if not verify_body_signature(message_body, message_hmac, message_sig, message_pubkey):
-            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "Invalid signature")
-            return ASResponse(success=False, error="invalid signature")
         
         existing_session = self.dao.get_active_session(username)
         if existing_session:
@@ -99,8 +102,8 @@ class AuthenticationServer:
         tgt = self._issue_tgt(username, client_addr, session_key)
         encrypted_tgt = encrypt_model(tgt, tgs_service["service_key"])
         
-        password_plain = user["password_plain"]
-        encrypted_session_key = encrypt_text(session_key, password_plain)
+        client_key = user["password_hash"]
+        encrypted_session_key = encrypt_text(session_key, client_key)
         
         session_id = secrets.token_hex(32)
         self.dao.create_session(username, session_id, client_addr, tgt.issued_at, tgt.expires_at)
@@ -113,6 +116,7 @@ class AuthenticationServer:
             client_id=username,
             encrypted_session_key=encrypted_session_key,
             ticket_tgt=encrypted_tgt,
+            salt=user["salt"],
             tgs_host=tgs_service["service_host"],
             tgs_port=tgs_service["service_port"],
             session_id=session_id,

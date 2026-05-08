@@ -28,16 +28,10 @@ class LoginView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         as_host, as_port = service_address("as_server")
-        tgs_host, tgs_port = service_address("tgs_server")
-        chat_host, chat_port = service_address("chat_server")
         self.username_input = QLineEdit()
         self.password_input = QLineEdit()
         self.as_host_input = QLineEdit(as_host)
-        self.tgs_host_input = QLineEdit(tgs_host)
-        self.chat_host_input = QLineEdit(chat_host)
         self.as_port_input = self._port_box(as_port)
-        self.tgs_port_input = self._port_box(tgs_port)
-        self.chat_port_input = self._port_box(chat_port)
         self.status_label = QLabel("等待登录")
         self.status_label.setObjectName("mutedBadge")
         self.auth_flow = AuthFlowView()
@@ -68,8 +62,6 @@ class LoginView(QWidget):
         form.addRow("用户名", self.username_input)
         form.addRow("密码", self.password_input)
         form.addRow("AS 地址", self._host_port_row(self.as_host_input, self.as_port_input))
-        form.addRow("TGS 地址", self._host_port_row(self.tgs_host_input, self.tgs_port_input))
-        form.addRow("ChatServer 地址", self._host_port_row(self.chat_host_input, self.chat_port_input))
 
         self.login_button = QPushButton("登录认证")
         self.login_button.clicked.connect(self._emit_login_requested)
@@ -106,8 +98,6 @@ class LoginView(QWidget):
                 "username": self.username_input.text().strip(),
                 "password": self.password_input.text(),
                 "as": (self.as_host_input.text().strip(), self.as_port_input.value()),
-                "tgs": (self.tgs_host_input.text().strip(), self.tgs_port_input.value()),
-                "chat": (self.chat_host_input.text().strip(), self.chat_port_input.value()),
             }
         )
 

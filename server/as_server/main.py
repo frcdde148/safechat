@@ -61,7 +61,9 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     response_body = {
         "client_id": response.client_id,
         "encrypted_session_key": response.encrypted_session_key,
+        "client_part": response.encrypted_session_key,
         "ticket_tgt": response.ticket_tgt,
+        "salt": response.salt,
         "tgs_host": response.tgs_host,
         "tgs_port": response.tgs_port,
         "version": PROTOCOL_VERSION,
@@ -69,10 +71,6 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "session_id": response.session_id,
     }
     
-    # Sign the response
-    digest, signature = as_server.sign_response(response_body)
-    
-    # Return signed response as dict
     return {
         "type": "AS_C_REP",
         "seq": message["seq"],
@@ -81,9 +79,9 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "v": 1,
         "ts": message.get("ts", 0),
         "nonce": message.get("nonce", ""),
-        "hmac": digest,
-        "sig": signature,
-        "pubkey": as_server.get_public_key(),
+        "hmac": "",
+        "sig": "",
+        "pubkey": "",
     }
 
 

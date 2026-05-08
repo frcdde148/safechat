@@ -1,2 +1,3 @@
 PyQt5>=5.15
 pycryptodome>=3.20
+Pillow>=10.0
