@@ -166,34 +166,67 @@ class MessageBubble(QFrame):
 
     def _show_full_image(self) -> None:
         """Show full-size image in a dialog when clicked."""
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QScrollArea, QLabel, QPushButton
+        from PyQt5.QtWidgets import QFileDialog, QDialog, QHBoxLayout, QVBoxLayout, QScrollArea, QLabel, QPushButton
         from PyQt5.QtGui import QPixmap
         
         if not getattr(self, 'full_image_data', ''):
             return
+        image_bytes = base64.b64decode(self.full_image_data)
         
         dialog = QDialog()
         dialog.setWindowTitle(self.file_name if getattr(self, 'file_name', '') else "查看图片")
-        dialog.setMinimumSize(600, 400)
+        dialog.setMinimumSize(900, 620)
         layout = QVBoxLayout(dialog)
         
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         
         pixmap = QPixmap()
-        pixmap.loadFromData(base64.b64decode(self.full_image_data))
+        pixmap.loadFromData(image_bytes)
         
         label = QLabel()
         label.setPixmap(pixmap)
         label.setAlignment(Qt.AlignCenter)
+        label.setMinimumSize(pixmap.size())
         
         scroll_area.setWidget(label)
         layout.addWidget(scroll_area)
         
+        button_row = QHBoxLayout()
+        save_btn = QPushButton("保存图片")
+        fullscreen_btn = QPushButton("全屏")
         close_btn = QPushButton("关闭")
+
+        def save_image() -> None:
+            default_name = self.file_name if getattr(self, 'file_name', '') else "safechat_image.jpg"
+            target, _ = QFileDialog.getSaveFileName(
+                dialog,
+                "保存图片",
+                default_name,
+                "图片文件 (*.png *.jpg *.jpeg *.bmp);;所有文件 (*)",
+            )
+            if target:
+                with open(target, "wb") as file:
+                    file.write(image_bytes)
+
+        def toggle_fullscreen() -> None:
+            if dialog.isFullScreen():
+                dialog.showNormal()
+                fullscreen_btn.setText("全屏")
+            else:
+                dialog.showFullScreen()
+                fullscreen_btn.setText("退出全屏")
+
+        save_btn.clicked.connect(save_image)
+        fullscreen_btn.clicked.connect(toggle_fullscreen)
         close_btn.clicked.connect(dialog.close)
-        layout.addWidget(close_btn)
+        button_row.addWidget(save_btn)
+        button_row.addWidget(fullscreen_btn)
+        button_row.addStretch(1)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
         
+        dialog.showMaximized()
         dialog.exec_()
 
     @staticmethod

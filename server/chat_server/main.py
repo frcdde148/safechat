@@ -27,6 +27,8 @@ chat_messages: list[dict] = []
 next_message_id = 1
 online_lock = threading.Lock()
 online_users: dict[str, dict] = {}  # username -> {session_id, client_ip, last_seen, status}
+pubkey_lock = threading.Lock()
+session_pubkeys: dict[str, str] = {}
 ONLINE_TIMEOUT_MS = 30_000
 
 
@@ -66,14 +68,6 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     chat = dao.get_service(CHAT_SERVICE)
     if not chat:
         return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
-
-    # Verify message signature
-    message_hmac = message.get("hmac", "")
-    message_sig = message.get("sig", "")
-    message_pubkey = message.get("pubkey", "")
-    if not verify_body_signature(message["body"], message_hmac, message_sig, message_pubkey):
-        dao.add_audit_log("", "unknown", address[0], "CHAT_AUTH_FAILED_INVALID_SIGNATURE")
-        return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
 
     ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
     if not ticket.is_valid():
@@ -127,22 +121,17 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     
     dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_OK")
     
-    # Prepare response body and sign it
     response_body = {
         "client_id": ticket.client_id,
         "mutual_auth": mutual_auth,
         "offline_messages": offline_messages_data,
         "room": "public",
     }
-    digest, signature = _sign_response(response_body)
     
     return Message(
         type="V_C_REP",
         seq=message["seq"],
         body=response_body,
-        hmac=digest,
-        sig=signature,
-        pubkey=_get_public_key(),
     )
 
 
@@ -150,7 +139,7 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     """Decrypt one chat message and return an encrypted ACK."""
     ticket = _decrypt_valid_service_ticket(message)
     _update_user_last_seen(ticket.client_id)
-    if not _verify_signed_chat_message(message):
+    if not _verify_signed_message_for_ticket(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "CHAT_SIGN_FAILED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "CHAT_SEND signature verification failed"})
 
@@ -220,9 +209,6 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
 def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
     """Handle image send request."""
     try:
-        if not _verify_signed_chat_message(message):
-            return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
-        
         chat = dao.get_service(CHAT_SERVICE)
         if not chat:
             return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
@@ -230,6 +216,8 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
         ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
         if not ticket.is_valid():
             return Message(type="ERROR", seq=message["seq"], body={"error": "service ticket is expired"})
+        if not _verify_signed_message_for_ticket(message, ticket):
+            return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
         
         _update_user_last_seen(ticket.client_id)
         
@@ -277,10 +265,15 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
         )
 
 
-def _verify_signed_chat_message(message: dict) -> bool:
-    """Verify CHAT_SEND digest and RSA signature fields."""
+def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
+    """Verify digest/RSA signature and bind the first post-login public key to the user."""
     if not message.get("hmac") or not message.get("sig") or not message.get("pubkey"):
         return False
+    with pubkey_lock:
+        existing_pubkey = session_pubkeys.get(ticket.client_id)
+        if existing_pubkey and existing_pubkey != message["pubkey"]:
+            return False
+        session_pubkeys.setdefault(ticket.client_id, message["pubkey"])
     return verify_body_signature(
         message["body"],
         message["hmac"],

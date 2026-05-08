@@ -129,11 +129,8 @@ class MainWindow(QMainWindow):
 
     def _enter_chat(self) -> None:
         username = self._auth_payload.get("username", self.login_view.username_input.text().strip())
-        chat_host = self.login_view.chat_host_input.text().strip()
-        chat_port = self.login_view.chat_port_input.value()
-        if self._auth_client:
-            chat_host = self._auth_client.chat_host
-            chat_port = self._auth_client.chat_port
+        chat_host = self._auth_client.chat_host if self._auth_client else ""
+        chat_port = self._auth_client.chat_port if self._auth_client else 0
         self.chat_view.current_user_label.setText(username)
         self.chat_view.server_status.set_value(f"{chat_host}:{chat_port}", "okBadge")
         self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")

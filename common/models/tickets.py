@@ -23,6 +23,7 @@ class Ticket:
     service_id: str
     issued_at: int
     expires_at: int
+    client_pubkey: str = ""
 
     def is_valid(self, now_ms: int | None = None) -> bool:
         """Return whether the ticket is inside its lifetime."""
@@ -39,7 +40,13 @@ class Authenticator:
     timestamp: int
 
 
-def issue_ticket(client_id: str, client_addr: str, session_key: str, service_id: str) -> Ticket:
+def issue_ticket(
+    client_id: str,
+    client_addr: str,
+    session_key: str,
+    service_id: str,
+    client_pubkey: str = "",
+) -> Ticket:
     """Create a ticket with the project default lifetime."""
     now = int(time.time() * 1000)
     return Ticket(
@@ -49,6 +56,7 @@ def issue_ticket(client_id: str, client_addr: str, session_key: str, service_id:
         service_id=service_id,
         issued_at=now,
         expires_at=now + DEFAULT_TICKET_LIFETIME_MS,
+        client_pubkey=client_pubkey,
     )
 
 

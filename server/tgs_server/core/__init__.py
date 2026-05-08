@@ -67,8 +67,6 @@ class TicketGrantingServer:
         Returns:
             TGSResponse containing service ticket and session key on success
         """
-        from common.protocol.security import verify_body_signature
-        
         # Get service configurations
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         chat_service = self.dao.get_service(self.CHAT_SERVICE)
@@ -80,11 +78,6 @@ class TicketGrantingServer:
         if not chat_service:
             self._log_audit("", "unknown", client_addr, "TGS_ERROR", "Chat service not configured")
             return TGSResponse(success=False, error="Chat service not configured")
-        
-        # Verify message signature
-        if not verify_body_signature(message_body, message_hmac, message_sig, message_pubkey):
-            self._log_audit("", "unknown", client_addr, "TGS_ERROR", "Invalid signature")
-            return TGSResponse(success=False, error="invalid signature")
         
         try:
             # Decrypt TGT using TGS secret key
@@ -114,7 +107,12 @@ class TicketGrantingServer:
             session_key_c_v = secrets.token_hex(16)
             
             # Issue service ticket encrypted with ChatServer's key
-            service_ticket = issue_ticket(tgt.client_id, tgt.client_addr, session_key_c_v, self.CHAT_SERVICE)
+            service_ticket = issue_ticket(
+                tgt.client_id,
+                tgt.client_addr,
+                session_key_c_v,
+                self.CHAT_SERVICE,
+            )
             encrypted_service_ticket = encrypt_model(service_ticket, chat_service["service_key"])
             
             # Encrypt session_key_c_v using Kc_tgs (session key from TGT)
