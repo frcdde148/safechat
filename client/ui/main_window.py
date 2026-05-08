@@ -167,7 +167,9 @@ class MainWindow(QMainWindow):
             
             # 添加发送的消息（包含密文）
             ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
-            self.chat_view.add_message(f"{self._auth_client.username}：{text}", "self", ciphertext)
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
             ack = result.get("ack", "")
             if ack:
                 self.chat_view.add_message(f"安全回执：{ack}", "security")
@@ -187,20 +189,48 @@ class MainWindow(QMainWindow):
     def _poll_chat_messages(self) -> None:
         if not self._auth_client or self.stack.currentWidget() is not self.chat_view:
             return
-        try:
-            session = self.chat_view.current_session()
-            messages = self._auth_client.poll_chat_messages(session["chat_type"], session["recipient"])
-        except Exception as exc:
-            self.chat_view.security_status.set_value("轮询失败", "errorBadge")
-            self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
-            self._poll_timer.stop()
+        
+        if getattr(self, '_poll_thread', None) and self._poll_thread.isRunning():
             return
-
+        
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        class PollThread(QThread):
+            finished = pyqtSignal(list)
+            error = pyqtSignal(Exception)
+            
+            def __init__(self, auth_client, chat_type, recipient):
+                super().__init__()
+                self.auth_client = auth_client
+                self.chat_type = chat_type
+                self.recipient = recipient
+            
+            def run(self):
+                try:
+                    messages = self.auth_client.poll_chat_messages(self.chat_type, self.recipient)
+                    self.finished.emit(messages)
+                except Exception as exc:
+                    self.error.emit(exc)
+        
+        session = self.chat_view.current_session()
+        self._poll_thread = PollThread(self._auth_client, session["chat_type"], session["recipient"])
+        self._poll_thread.finished.connect(self._on_poll_finished)
+        self._poll_thread.error.connect(self._on_poll_error)
+        self._poll_thread.start()
+    
+    def _on_poll_finished(self, messages):
         self._display_chat_messages(messages, include_self=True)
         if messages:
             self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
             self.chat_view.security_status.set_value("群聊同步正常", "okBadge")
         self._refresh_online_users()
+        self._poll_thread = None
+    
+    def _on_poll_error(self, exc):
+        self.chat_view.security_status.set_value("轮询失败", "errorBadge")
+        self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
+        self._poll_timer.stop()
+        self._poll_thread = None
 
     def _refresh_online_users(self) -> None:
         if not self._auth_client:
@@ -232,6 +262,7 @@ class MainWindow(QMainWindow):
     def _display_chat_messages(self, messages: list[dict], include_self: bool = False) -> None:
         if not self._auth_client:
             return
+        from datetime import datetime
         for message in messages:
             is_self = message["sender"] == self._auth_client.username
             if is_self and not include_self:
@@ -240,7 +271,18 @@ class MainWindow(QMainWindow):
             ciphertext = message.get("ciphertext", "")
             image_data = message.get("image_data", "")
             file_name = message.get("file_name", "")
-            self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind, ciphertext, image_data, file_name)
+            username = message["sender"] if not is_self else self._auth_client.username
+            
+            # Convert timestamp from milliseconds to readable format
+            timestamp = message.get("timestamp", "")
+            if timestamp:
+                try:
+                    ts = int(timestamp) / 1000  # Convert ms to seconds
+                    timestamp = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+                except:
+                    timestamp = ""
+                    
+            self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp)
 
     def _start_private_chat(self) -> None:
         """Handle starting a private chat with a manually entered username."""
@@ -340,7 +382,7 @@ class MainWindow(QMainWindow):
         class ImageSendThread(QThread):
             finished = pyqtSignal(dict)
             error = pyqtSignal(Exception)
-            progress = pyqtSignal(int)
+            progress = pyqtSignal(int, str)
             
             def __init__(self, auth_client, file_path):
                 super().__init__()
@@ -349,8 +391,8 @@ class MainWindow(QMainWindow):
             
             def run(self):
                 try:
-                    def progress_callback(value):
-                        self.progress.emit(value)
+                    def progress_callback(value, text=""):
+                        self.progress.emit(value, text)
                     result = self.auth_client.send_image(self.file_path, progress_callback)
                     self.finished.emit(result)
                 except Exception as exc:
@@ -358,14 +400,15 @@ class MainWindow(QMainWindow):
         
         def on_send_finished(result):
             try:
-                self.chat_view.set_upload_progress(80)
+                self.chat_view.set_upload_progress(80, "正在处理响应...")
                 
                 if result.get("success"):
-                    self.chat_view.set_upload_progress(100)
+                    self.chat_view.set_upload_progress(100, "上传完成！")
                     self.chat_view.add_message(f"图片发送成功：{result.get('file_name')}", "system")
                     self.chat_view.security_status.set_value("图片已发送", "okBadge")
                     self._poll_chat_messages()
                 else:
+                    self.chat_view.set_upload_progress(0, "上传失败")
                     self.chat_view.add_message(f"图片发送失败：{result.get('error', '未知错误')}", "security")
             finally:
                 self.chat_view.hide_upload_progress()
@@ -374,6 +417,7 @@ class MainWindow(QMainWindow):
         
         def on_send_error(exc):
             try:
+                self.chat_view.set_upload_progress(0, "发送失败")
                 self.chat_view.add_message(f"安全提示：图片发送失败，{exc}", "security")
                 self.chat_view.security_status.set_value("发送失败", "errorBadge")
             finally:
@@ -382,7 +426,7 @@ class MainWindow(QMainWindow):
                 self._image_send_thread = None
         
         # Start the thread
-        self.chat_view.set_upload_progress(30)
+        self.chat_view.set_upload_progress(30, "正在初始化...")
         thread = ImageSendThread(self._auth_client, file_path)
         thread.finished.connect(on_send_finished)
         thread.error.connect(on_send_error)

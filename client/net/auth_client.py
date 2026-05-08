@@ -217,7 +217,7 @@ class AuthClient:
         
         # Read image file
         if progress_callback:
-            progress_callback(35)
+            progress_callback(35, "正在读取文件...")
         with open(file_path, "rb") as f:
             image_data = f.read()
         
@@ -228,15 +228,15 @@ class AuthClient:
         
         # Encode to base64 and encrypt
         if progress_callback:
-            progress_callback(40)
+            progress_callback(40, "正在编码图片...")
         image_base64 = b64encode(image_data).decode()
         
         if progress_callback:
-            progress_callback(50)
+            progress_callback(50, "正在加密数据...")
         image_cipher = encrypt_text(image_base64, self.session_key_c_v)
         
         if progress_callback:
-            progress_callback(60)
+            progress_callback(60, "正在准备发送...")
         
         body = {
             "service_ticket": self.service_ticket,
@@ -256,10 +256,10 @@ class AuthClient:
             pubkey=self.public_key_pem,
         )
         if progress_callback:
-            progress_callback(70)
+            progress_callback(70, "正在上传图片...")
         response = request(self.chat_host, self.chat_port, message, timeout=60.0)
         if progress_callback:
-            progress_callback(75)
+            progress_callback(75, "等待服务器响应...")
         self._raise_on_error(response)
         
         return {"success": True, "file_name": os.path.basename(file_path)}
