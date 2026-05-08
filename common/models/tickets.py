@@ -10,7 +10,8 @@ from typing import Any
 from common.crypto.des import decrypt_text, encrypt_text
 
 
-DEFAULT_TICKET_LIFETIME_MS = 10 * 60 * 1000
+DEFAULT_TICKET_LIFETIME_MS = 30 * 60 * 1000
+DEFAULT_CLOCK_SKEW_MS = 5 * 60 * 1000
 
 
 @dataclass(slots=True)
@@ -25,10 +26,20 @@ class Ticket:
     expires_at: int
     client_pubkey: str = ""
 
-    def is_valid(self, now_ms: int | None = None) -> bool:
-        """Return whether the ticket is inside its lifetime."""
+    def is_valid(self, now_ms: int | None = None, skew_ms: int = DEFAULT_CLOCK_SKEW_MS) -> bool:
+        """Return whether the ticket is inside its lifetime, allowing clock skew."""
         now_ms = now_ms or int(time.time() * 1000)
-        return self.issued_at <= now_ms <= self.expires_at
+        return self.issued_at - skew_ms <= now_ms <= self.expires_at + skew_ms
+
+    def validity_debug(self, now_ms: int | None = None) -> dict[str, int]:
+        """Return timestamps useful for diagnosing multi-host clock drift."""
+        now_ms = now_ms or int(time.time() * 1000)
+        return {
+            "issued_at": self.issued_at,
+            "expires_at": self.expires_at,
+            "now": now_ms,
+            "clock_skew_ms": DEFAULT_CLOCK_SKEW_MS,
+        }
 
 
 @dataclass(slots=True)

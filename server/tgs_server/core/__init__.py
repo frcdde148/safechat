@@ -85,8 +85,9 @@ class TicketGrantingServer:
             
             # Validate TGT lifetime
             if not tgt.is_valid():
-                self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", "TGT expired")
-                return TGSResponse(success=False, error="TGT has expired")
+                debug = tgt.validity_debug()
+                self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", f"TGT expired: {debug}")
+                return TGSResponse(success=False, error=f"TGT has expired: {debug}")
             
             # Decrypt authenticator using session key from TGT
             auth = decrypt_authenticator(authenticator, tgt.session_key)

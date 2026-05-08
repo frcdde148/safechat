@@ -68,7 +68,11 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
 
     ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
     if not ticket.is_valid():
-        return Message(type="ERROR", seq=message["seq"], body={"error": "service ticket is expired"})
+        return Message(
+            type="ERROR",
+            seq=message["seq"],
+            body={"error": f"service ticket is expired: {ticket.validity_debug()}"},
+        )
     authenticator = decrypt_authenticator(message["body"]["authenticator"], ticket.session_key)
     if authenticator.client_id != ticket.client_id:
         return Message(
@@ -196,7 +200,11 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
         
         ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
         if not ticket.is_valid():
-            return Message(type="ERROR", seq=message["seq"], body={"error": "service ticket is expired"})
+            return Message(
+                type="ERROR",
+                seq=message["seq"],
+                body={"error": f"service ticket is expired: {ticket.validity_debug()}"},
+            )
         if not _verify_signed_message_for_ticket(message, ticket):
             return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
         
@@ -323,7 +331,7 @@ def _decrypt_valid_service_ticket(message: dict):
         raise ValueError("ChatServer service is not configured")
     ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
     if not ticket.is_valid():
-        raise ValueError("service ticket is expired")
+        raise ValueError(f"service ticket is expired: {ticket.validity_debug()}")
     return ticket
 
 
