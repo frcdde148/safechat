@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -23,9 +24,9 @@ from PyQt5.QtWidgets import (
 
 
 class MessageBubble(QFrame):
-    """Chat bubble for self, peer, system, and security messages."""
+    """Chat bubble for self, peer, system, and security messages with avatar and username."""
 
-    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("messageBubble")
         self.text = text
@@ -33,72 +34,204 @@ class MessageBubble(QFrame):
         self.kind = kind
         self.image_data = image_data
         self.file_name = file_name
+        self.username = username
         self.show_cipher = False
+        self.timestamp = timestamp
         
+        # Main layout
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
 
+        # Create avatar
+        self.avatar_label = QLabel()
+        self.avatar_label.setFixedSize(40, 40)
+        self.avatar_label.setAlignment(Qt.AlignCenter)
+        self.avatar_label.setText(username[0].upper() if username else "?")
+        self.avatar_label.setStyleSheet(self._avatar_style(username))
+        
+        # Create content widget (username + message + time)
+        self.content_widget = QWidget()
+        content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(2)
+        
+        # Username label
+        self.username_label = QLabel(username)
+        self.username_label.setStyleSheet("font-size: 12px; color: #6b7280;")
+        
+        # Timestamp label
+        self.timestamp_label = QLabel(self.timestamp)
+        self.timestamp_label.setStyleSheet("font-size: 11px; color: #9ca3af;")
+        
+        # Message content
         if image_data:
-            # Show image
-            self.label = QLabel()
+            # Show image (clickable)
+            self.full_image_data = image_data
+            self.message_label = QLabel()
             pixmap = QPixmap()
             pixmap.loadFromData(base64.b64decode(image_data))
-            # Scale image to fit (max 300px width)
             if pixmap.width() > 300:
-                pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
-            self.label.setPixmap(pixmap)
-            self.label.setWordWrap(True)
-            self.label.setAlignment(Qt.AlignCenter)
+                scaled_pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+            else:
+                scaled_pixmap = pixmap
+            self.message_label.setPixmap(scaled_pixmap)
+            self.message_label.setAlignment(Qt.AlignCenter)
+            self.message_label.setCursor(Qt.PointingHandCursor)
+            self.message_label.mousePressEvent = lambda e: self._show_full_image()
         else:
             # Show text
-            self.label = QLabel(text)
-            self.label.setWordWrap(True)
-            self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.message_label = QLabel(text)
+            self.message_label.setWordWrap(True)
+            self.message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.full_image_data = ""
 
+        # Build layout based on message type
         if kind == "self":
-            self.label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a"))
+            # Self message: avatar on right, content on left
+            self.message_label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a", is_self=True))
+            self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            
+            # Create message widget with timestamp
+            message_widget = QWidget()
+            message_layout = QHBoxLayout(message_widget)
+            message_layout.setContentsMargins(0, 0, 0, 0)
+            message_layout.addWidget(self.message_label, 1)
+            self.timestamp_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
+            message_layout.addWidget(self.timestamp_label, 0)
+            
+            content_layout.addWidget(message_widget, 0)
+            self.content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             layout.addStretch(1)
-            layout.addWidget(self.label, 0)
+            layout.addWidget(self.content_widget, 0)
+            layout.addWidget(self.avatar_label, 0)
+            self.username_label.hide()
         elif kind == "system":
-            self.label.setAlignment(Qt.AlignCenter)
-            self.label.setStyleSheet(self._bubble_style("#e2e8f0", "#475569"))
+            # System message: centered, no avatar
+            self.message_label.setAlignment(Qt.AlignCenter)
+            self.message_label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280", is_system=True))
             layout.addStretch(1)
-            layout.addWidget(self.label, 0)
+            layout.addWidget(self.message_label, 0)
             layout.addStretch(1)
+            self.avatar_label.hide()
+            self.username_label.hide()
+            self.timestamp_label.hide()
         elif kind == "security":
-            self.label.setStyleSheet(self._bubble_style("#ffedd5", "#9a3412"))
-            layout.addWidget(self.label, 1)
+            # Security message: full width, no avatar
+            self.message_label.setStyleSheet(self._bubble_style("#fffbeb", "#92400e", is_system=True))
+            self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            layout.addWidget(self.message_label, 1)
+            self.avatar_label.hide()
+            self.username_label.hide()
+            self.timestamp_label.hide()
         else:
-            self.label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937"))
-            layout.addWidget(self.label, 0)
+            # Peer message: avatar on left, content on right
+            self.message_label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937", is_self=False))
+            self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            
+            # Create message widget with timestamp
+            message_widget = QWidget()
+            message_layout = QHBoxLayout(message_widget)
+            message_layout.setContentsMargins(0, 0, 0, 0)
+            message_layout.addWidget(self.message_label, 1)
+            self.timestamp_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
+            message_layout.addWidget(self.timestamp_label, 0)
+            
+            content_layout.addWidget(self.username_label, 0)
+            content_layout.addWidget(message_widget, 0)
+            self.content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            layout.addWidget(self.avatar_label, 0)
+            layout.addWidget(self.content_widget, 0)
             layout.addStretch(1)
 
     def set_display_mode(self, show_ciphertext: bool) -> None:
         self.show_cipher = show_ciphertext
         if not self.image_data:
             if show_ciphertext and self.ciphertext:
-                self.label.setText(self.ciphertext)
-                self.label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280") + " font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;")
+                self.message_label.setText(self.ciphertext)
+                self.message_label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280", is_system=True) + " font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;")
             else:
-                self.label.setText(self.text)
+                self.message_label.setText(self.text)
                 self._restore_style()
 
     def _restore_style(self) -> None:
         if self.kind == "self":
-            self.label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a"))
+            self.message_label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a", is_self=True))
         elif self.kind == "system":
-            self.label.setStyleSheet(self._bubble_style("#e2e8f0", "#475569"))
+            self.message_label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280", is_system=True))
         elif self.kind == "security":
-            self.label.setStyleSheet(self._bubble_style("#ffedd5", "#9a3412"))
+            self.message_label.setStyleSheet(self._bubble_style("#fffbeb", "#92400e", is_system=True))
         else:
-            self.label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937"))
+            self.message_label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937", is_self=False))
+
+    def _show_full_image(self) -> None:
+        """Show full-size image in a dialog when clicked."""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QScrollArea, QLabel, QPushButton
+        from PyQt5.QtGui import QPixmap
+        
+        if not getattr(self, 'full_image_data', ''):
+            return
+        
+        dialog = QDialog()
+        dialog.setWindowTitle(self.file_name if getattr(self, 'file_name', '') else "查看图片")
+        dialog.setMinimumSize(600, 400)
+        layout = QVBoxLayout(dialog)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        
+        pixmap = QPixmap()
+        pixmap.loadFromData(base64.b64decode(self.full_image_data))
+        
+        label = QLabel()
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignCenter)
+        
+        scroll_area.setWidget(label)
+        layout.addWidget(scroll_area)
+        
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn)
+        
+        dialog.exec_()
 
     @staticmethod
-    def _bubble_style(background: str, color: str) -> str:
+    def _avatar_style(username: str) -> str:
+        colors = [
+            "#10b981", "#3b82f6", "#8b5cf6", "#ec4899",
+            "#f59e0b", "#ef4444", "#06b6d4", "#84cc16"
+        ]
+        if username:
+            color_index = hash(username) % len(colors)
+            bg_color = colors[color_index]
+        else:
+            bg_color = "#9ca3af"
+        
         return (
-            f"background: {background}; color: {color}; border: 1px solid #e2e8f0; "
-            "border-radius: 8px; padding: 9px 12px;"
+            f"background: {bg_color}; color: white; border-radius: 20px; "
+            "font-weight: 600; font-size: 16px; qproperty-alignment: AlignCenter;"
         )
+
+    @staticmethod
+    def _bubble_style(background: str, color: str, is_self: bool = False, is_system: bool = False) -> str:
+        if is_system:
+            return (
+                f"background: {background}; color: {color}; "
+                "border-radius: 8px; padding: 20px 32px; font-size: 28px;"
+            )
+        elif is_self:
+            return (
+                f"background: {background}; color: {color}; border: 1px solid #bfdbfe; "
+                "border-radius: 16px 16px 6px 16px; padding: 24px 32px; "
+                "font-size: 30px;"
+            )
+        else:
+            return (
+                f"background: {background}; color: {color}; border: 1px solid #e5e7eb; "
+                "border-radius: 16px 16px 16px 6px; padding: 24px 32px; "
+                "font-size: 30px;"
+            )
 
 
 class StatusLine(QWidget):
@@ -233,9 +366,13 @@ class ChatView(QWidget):
 
         # Upload progress bar
         self.upload_progress = QProgressBar()
-        self.upload_progress.setFixedHeight(8)
+        self.upload_progress.setFixedHeight(16)
         self.upload_progress.setVisible(False)
+        self.upload_progress_label = QLabel()
+        self.upload_progress_label.setStyleSheet("font-size: 13px; color: #6b7280; font-weight: bold;")
+        self.upload_progress_label.setVisible(False)
         layout.addWidget(self.upload_progress)
+        layout.addWidget(self.upload_progress_label)
 
         button_row = QHBoxLayout()
         self.image_button = QPushButton("图片")
@@ -281,8 +418,8 @@ class ChatView(QWidget):
         layout.addStretch(1)
         return panel
 
-    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "") -> None:
-        bubble = MessageBubble(text, kind, ciphertext, image_data, file_name)
+    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "") -> None:
+        bubble = MessageBubble(text, kind, ciphertext, image_data, file_name, username, timestamp)
         self.message_area.insertWidget(self.message_area.count() - 1, bubble)
         if kind not in ("system", "security"):
             self.message_bubbles.append(bubble)
@@ -367,26 +504,35 @@ class ChatView(QWidget):
     def _update_send_button_state(self) -> None:
         """Update send button state based on input content."""
         has_text = bool(self.message_input.toPlainText().strip())
-        self.send_button.setEnabled(has_text)
-        if has_text:
-            self.send_button.setObjectName("primaryButton")
-        else:
-            self.send_button.setObjectName("disabledButton")
-        self.send_button.style().unpolish(self.send_button)
-        self.send_button.style().polish(self.send_button)
+        current_enabled = self.send_button.isEnabled()
+        
+        # Only update if state actually changed
+        if has_text != current_enabled:
+            self.send_button.setEnabled(has_text)
+            if has_text:
+                self.send_button.setObjectName("primaryButton")
+            else:
+                self.send_button.setObjectName("disabledButton")
+            self.send_button.style().unpolish(self.send_button)
+            self.send_button.style().polish(self.send_button)
 
     def show_upload_progress(self) -> None:
         """Show upload progress bar."""
         self.upload_progress.setVisible(True)
         self.upload_progress.setValue(0)
+        self.upload_progress_label.setVisible(True)
+        self.upload_progress_label.setText("正在准备上传...")
 
-    def set_upload_progress(self, value: int) -> None:
-        """Set upload progress value (0-100)."""
+    def set_upload_progress(self, value: int, text: str = "") -> None:
+        """Set upload progress value (0-100) and optional status text."""
         self.upload_progress.setValue(value)
+        if text:
+            self.upload_progress_label.setText(text)
 
     def hide_upload_progress(self) -> None:
         """Hide upload progress bar."""
         self.upload_progress.setVisible(False)
+        self.upload_progress_label.setVisible(False)
 
     def _seed_demo_content(self) -> None:
         self.add_message("系统通知：已进入群聊", "system")
