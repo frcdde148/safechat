@@ -154,6 +154,11 @@ class MainWindow(QMainWindow):
             self.chat_view.security_status.set_value("未认证", "errorBadge")
             return
 
+        # Prevent duplicate sends
+        if getattr(self, '_is_sending', False):
+            return
+        self._is_sending = True
+        
         self.chat_view.send_button.setEnabled(False)
         session = self.chat_view.current_session()
         
@@ -165,15 +170,16 @@ class MainWindow(QMainWindow):
             )
             self.chat_view.message_input.clear()
             
-            # 添加发送的消息（包含密文）
-            ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
+            ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
+            
             ack = result.get("ack", "")
             if ack:
                 self.chat_view.add_message(f"安全回执：{ack}", "security")
-                if "对方离线" in ack:
+                if "对方离线" in ack or "已存储" in ack:
+                    # 对方离线，消息存储在服务器，需要直接显示自己发送的消息
+                    self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
                     self.chat_view.security_status.set_value("对方离线", "warnBadge")
                 else:
                     self.chat_view.security_status.set_value("加密与签名已通过", "okBadge")
@@ -183,6 +189,7 @@ class MainWindow(QMainWindow):
             self.chat_view.add_message(f"安全提示：消息发送失败，{exc}", "security")
             self.chat_view.security_status.set_value("发送失败", "errorBadge")
         finally:
+            self._is_sending = False
             self.chat_view.send_button.setEnabled(True)
             self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
 
