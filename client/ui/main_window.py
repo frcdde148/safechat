@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self._stage_index = 0
         self._auth_payload: dict = {}
         self._auth_client: AuthClient | None = None
+        self._is_relogin = False
         self._stage_timer = QTimer(self)
         self._stage_timer.setInterval(1100)
         self._stage_timer.timeout.connect(self._advance_demo_auth)
@@ -44,6 +45,8 @@ class MainWindow(QMainWindow):
         self.chat_view.session_changed.connect(self._switch_chat_session)
         self.chat_view.start_private_chat_requested.connect(self._start_private_chat)
         self.chat_view.return_to_group_chat_requested.connect(self._return_to_group_chat)
+        self.chat_view.relogin_requested.connect(self._handle_relogin)
+        self.chat_view.image_send_requested.connect(self._send_image)
 
     def _start_demo_auth(self, payload: dict) -> None:
         """Run a local UI authentication demo until real controllers are wired."""
@@ -70,6 +73,22 @@ class MainWindow(QMainWindow):
 
         if self._stage_index >= len(AUTH_STAGES):
             self._stage_timer.stop()
+            
+            if getattr(self, '_is_relogin', False):
+                # Handle re-login completion
+                self._is_relogin = False
+                try:
+                    self._enter_chat()
+                    self.chat_view.add_message("系统提示：重新登录成功，会话已刷新", "system")
+                    self.chat_view.security_status.set_value("会话已刷新", "okBadge")
+                except Exception as exc:
+                    self.chat_view.add_message(f"安全提示：重新登录后进入聊天室失败，{exc}", "security")
+                    self.chat_view.security_status.set_value("进入聊天室失败", "errorBadge")
+                finally:
+                    self.chat_view.relogin_button.setEnabled(True)
+                return
+            
+            # Normal login completion
             self.login_view.set_status("认证通过", "ok")
             self.login_view.login_button.setEnabled(True)
             self.login_view.enter_chat_button.setEnabled(True)
@@ -82,6 +101,9 @@ class MainWindow(QMainWindow):
         if not self._auth_client:
             self._stage_timer.stop()
             self.login_view.set_status("认证客户端未初始化", "error")
+            if getattr(self, '_is_relogin', False):
+                self._is_relogin = False
+                self.chat_view.relogin_button.setEnabled(True)
             return
 
         current_stage, current_label = AUTH_STAGES[self._stage_index]
@@ -96,6 +118,12 @@ class MainWindow(QMainWindow):
             self.login_view.auth_flow.mark_failed(current_stage)
             self.login_view.set_status("认证失败", "error")
             self.login_view.login_button.setEnabled(True)
+            
+            if getattr(self, '_is_relogin', False):
+                self._is_relogin = False
+                self.chat_view.add_message(f"安全提示：重新认证失败，{detail}", "security")
+                self.chat_view.security_status.set_value("重新认证失败", "errorBadge")
+                self.chat_view.relogin_button.setEnabled(True)
             return
         self._stage_index += 1
 
@@ -168,7 +196,7 @@ class MainWindow(QMainWindow):
             self._poll_timer.stop()
             return
 
-        self._display_chat_messages(messages)
+        self._display_chat_messages(messages, include_self=True)
         if messages:
             self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
             self.chat_view.security_status.set_value("群聊同步正常", "okBadge")
@@ -210,7 +238,9 @@ class MainWindow(QMainWindow):
                 continue
             kind = "self" if is_self else "peer"
             ciphertext = message.get("ciphertext", "")
-            self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind, ciphertext)
+            image_data = message.get("image_data", "")
+            file_name = message.get("file_name", "")
+            self.chat_view.add_message(f"{message['sender']}：{message['text']}", kind, ciphertext, image_data, file_name)
 
     def _start_private_chat(self) -> None:
         """Handle starting a private chat with a manually entered username."""
@@ -261,3 +291,102 @@ class MainWindow(QMainWindow):
             self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
             return
         self._display_chat_messages(messages, include_self=True)
+
+    def _handle_relogin(self) -> None:
+        """Handle re-login request when service ticket expires."""
+        if not self._auth_client or not self._auth_payload:
+            self.chat_view.add_message("系统提示：无法重新登录，请返回登录页", "security")
+            return
+        
+        self.chat_view.add_message("系统提示：正在重新认证...", "system")
+        self.chat_view.relogin_button.setEnabled(False)
+        
+        try:
+            self._auth_client.reset_session()
+            self._stage_index = 0
+            self._is_relogin = True
+            self._stage_timer.start()
+        except Exception as exc:
+            self.chat_view.add_message(f"安全提示：重新登录失败，{exc}", "security")
+            self.chat_view.security_status.set_value("重新登录失败", "errorBadge")
+            self.chat_view.relogin_button.setEnabled(True)
+
+    def _send_image(self) -> None:
+        """Handle image send request."""
+        from PyQt5.QtWidgets import QFileDialog
+        import os
+        
+        if not self._auth_client:
+            self.chat_view.add_message("系统提示：尚未完成认证，不能发送图片", "security")
+            return
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "选择图片", 
+            "", 
+            "图片文件 (*.png *.jpg *.jpeg *.gif *.bmp)"
+        )
+        
+        if not file_path:
+            return
+        
+        # Show progress bar
+        self.chat_view.show_upload_progress()
+        self.chat_view.set_upload_progress(10)
+        
+        # Execute image send in a separate thread to avoid blocking UI
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        class ImageSendThread(QThread):
+            finished = pyqtSignal(dict)
+            error = pyqtSignal(Exception)
+            progress = pyqtSignal(int)
+            
+            def __init__(self, auth_client, file_path):
+                super().__init__()
+                self.auth_client = auth_client
+                self.file_path = file_path
+            
+            def run(self):
+                try:
+                    def progress_callback(value):
+                        self.progress.emit(value)
+                    result = self.auth_client.send_image(self.file_path, progress_callback)
+                    self.finished.emit(result)
+                except Exception as exc:
+                    self.error.emit(exc)
+        
+        def on_send_finished(result):
+            try:
+                self.chat_view.set_upload_progress(80)
+                
+                if result.get("success"):
+                    self.chat_view.set_upload_progress(100)
+                    self.chat_view.add_message(f"图片发送成功：{result.get('file_name')}", "system")
+                    self.chat_view.security_status.set_value("图片已发送", "okBadge")
+                    self._poll_chat_messages()
+                else:
+                    self.chat_view.add_message(f"图片发送失败：{result.get('error', '未知错误')}", "security")
+            finally:
+                self.chat_view.hide_upload_progress()
+                # Release thread reference
+                self._image_send_thread = None
+        
+        def on_send_error(exc):
+            try:
+                self.chat_view.add_message(f"安全提示：图片发送失败，{exc}", "security")
+                self.chat_view.security_status.set_value("发送失败", "errorBadge")
+            finally:
+                self.chat_view.hide_upload_progress()
+                # Release thread reference
+                self._image_send_thread = None
+        
+        # Start the thread
+        self.chat_view.set_upload_progress(30)
+        thread = ImageSendThread(self._auth_client, file_path)
+        thread.finished.connect(on_send_finished)
+        thread.error.connect(on_send_error)
+        thread.progress.connect(self.chat_view.set_upload_progress)
+        # Keep reference to avoid garbage collection
+        self._image_send_thread = thread
+        thread.start()

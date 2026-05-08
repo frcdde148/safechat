@@ -33,6 +33,8 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
         return _handle_mutual_auth(message, address)
     if message["type"] == "CHAT_SEND":
         return _handle_chat_send(message, address)
+    if message["type"] == "IMAGE_SEND":
+        return _handle_image_send(message, address)
     if message["type"] == "CHAT_POLL":
         return _handle_chat_poll(message, address)
     if message["type"] == "USER_LIST":
@@ -40,7 +42,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
     return Message(
         type="ERROR",
         seq=message["seq"],
-        body={"error": "ChatServer only accepts C_V_REQ, CHAT_SEND, CHAT_POLL or USER_LIST"},
+        body={"error": "ChatServer only accepts C_V_REQ, CHAT_SEND, IMAGE_SEND, CHAT_POLL or USER_LIST"},
     )
 
 
@@ -184,6 +186,66 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     )
 
 
+def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
+    """Handle image send request."""
+    try:
+        if not _verify_signed_chat_message(message):
+            return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
+        
+        chat = dao.get_service(CHAT_SERVICE)
+        if not chat:
+            return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
+        
+        ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
+        if not ticket.is_valid():
+            return Message(type="ERROR", seq=message["seq"], body={"error": "service ticket is expired"})
+        
+        _update_user_last_seen(ticket.client_id)
+        
+        # Get image data from message
+        image_cipher = message["body"]["image_cipher"]
+        file_name = message["body"]["file_name"]
+        file_size = message["body"]["file_size"]
+        
+        # Decrypt image data
+        plaintext = decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], ticket.session_key)
+        
+        # Store image in messages (as base64 string)
+        chat_type = message["body"].get("chat_type", "group")
+        recipient = message["body"].get("recipient", "")
+        
+        message_id = _append_chat_message(ticket.client_id, f"[图片] {file_name}", chat_type, recipient, plaintext, file_name)
+        
+        dao.add_audit_log(
+            "",
+            ticket.client_id,
+            address[0],
+            "IMAGE_SEND",
+            content_enc=json.dumps({"file_name": file_name, "file_size": file_size}, ensure_ascii=False),
+        )
+        
+        ack_text = f"图片 {file_name} 已接收，大小: {file_size} bytes"
+        return Message(
+            type="CHAT_ACK",
+            seq=message["seq"],
+            body={
+                "sender": ticket.client_id,
+                "recipient": recipient,
+                "chat_type": chat_type,
+                "message_id": message_id,
+                "ack_cipher": encrypt_text(ack_text, ticket.session_key),
+                "room": _session_key(ticket.client_id, chat_type, recipient),
+            },
+        )
+    except Exception as e:
+        print(f"[ERROR] _handle_image_send failed: {str(e)}")
+        return Message(
+            type="ERROR", 
+            seq=message["seq"], 
+            body={"error": f"image send failed: {str(e)}"}
+        )
+
+
 def _verify_signed_chat_message(message: dict) -> bool:
     """Verify CHAT_SEND digest and RSA signature fields."""
     if not message.get("hmac") or not message.get("sig") or not message.get("pubkey"):
@@ -204,6 +266,7 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     chat_type = message["body"].get("chat_type", "group")
     recipient = message["body"].get("recipient", "")
     session_key = _session_key(ticket.client_id, chat_type, recipient)
+    
     with messages_lock:
         pending = [
             item.copy()
@@ -212,18 +275,23 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
             and item["session_key"] == session_key
             and _can_read_message(ticket.client_id, item)
         ]
+    
     encrypted_messages = []
     for item in pending:
-        encrypted_messages.append(
-            {
-                "id": item["id"],
-                "sender": item["sender"],
-                "recipient": item["recipient"],
-                "chat_type": item["chat_type"],
-                "timestamp": item["timestamp"],
-                "message_cipher": encrypt_text(item["text"], ticket.session_key),
-            }
-        )
+        msg_data = {
+            "id": item["id"],
+            "sender": item["sender"],
+            "recipient": item["recipient"],
+            "chat_type": item["chat_type"],
+            "timestamp": item["timestamp"],
+            "message_cipher": encrypt_text(item["text"], ticket.session_key),
+        }
+        # Include image data if present
+        if item.get("image_data"):
+            msg_data["image_data"] = item["image_data"]
+            msg_data["file_name"] = item.get("file_name", "")
+        encrypted_messages.append(msg_data)
+    
     dao.add_audit_log("", ticket.client_id, address[0], "CHAT_POLL", content_enc=str(last_seen_id))
     return Message(
         type="CHAT_RECV",
@@ -261,7 +329,7 @@ def _decrypt_valid_service_ticket(message: dict):
     return ticket
 
 
-def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str) -> int:
+def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str, image_data: str = "", file_name: str = "") -> int:
     global next_message_id
     with messages_lock:
         message_id = next_message_id
@@ -275,6 +343,8 @@ def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str)
                 "chat_type": chat_type,
                 "session_key": session_key,
                 "text": text,
+                "image_data": image_data,
+                "file_name": file_name,
                 "timestamp": int(time.time() * 1000),
             }
         )

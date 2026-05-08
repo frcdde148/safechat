@@ -35,6 +35,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            password_plain TEXT NOT NULL,
             salt TEXT NOT NULL,
             role TEXT DEFAULT 'user',
             created_at INTEGER NOT NULL
@@ -108,10 +109,10 @@ def seed_users(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT OR IGNORE INTO users
-                (username, password_hash, salt, role, created_at)
-            VALUES (?, ?, ?, ?, ?)
+                (username, password_hash, password_plain, salt, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (username, hash_password(password, salt), salt, role, now),
+            (username, hash_password(password, salt), password, salt, role, now),
         )
 
 

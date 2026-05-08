@@ -34,11 +34,14 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     
     # Extract credentials from request
     username = message["body"].get("username", "")
-    password = message["body"].get("password", "")
     client_addr = address[0]
+    message_body = message.get("body", {})
+    message_hmac = message.get("hmac", "")
+    message_sig = message.get("sig", "")
+    message_pubkey = message.get("pubkey", "")
     
     # Perform authentication
-    response = as_server.authenticate(username, password, client_addr)
+    response = as_server.authenticate(username, client_addr, message_body, message_hmac, message_sig, message_pubkey)
     
     if not response.success:
         return {
@@ -57,7 +60,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     # Build response body with ALL required fields
     response_body = {
         "client_id": response.client_id,
-        "session_key_c_tgs": response.session_key_c_tgs,
+        "encrypted_session_key": response.encrypted_session_key,
         "ticket_tgt": response.ticket_tgt,
         "tgs_host": response.tgs_host,
         "tgs_port": response.tgs_port,
