@@ -6,11 +6,18 @@ import hashlib
 import os
 import sqlite3
 import time
+from argparse import ArgumentParser
 from pathlib import Path
 
 from common.config.settings import database_path, service_address, service_key
 
 DB_PATH = database_path()
+ROLE_DB_PATHS = {
+    "as": database_path("as"),
+    "tgs": database_path("tgs"),
+    "chat": database_path("chat"),
+}
+VALID_ROLES = ("as", "tgs", "chat", "all")
 
 
 SEED_USERS = (
@@ -97,6 +104,21 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_offline_messages_recipient ON offline_messages(recipient);
         CREATE INDEX IF NOT EXISTS idx_offline_messages_status ON offline_messages(status);
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender TEXT NOT NULL,
+            recipient TEXT DEFAULT '',
+            chat_type TEXT NOT NULL DEFAULT 'group',
+            session_key TEXT NOT NULL,
+            message_text TEXT NOT NULL,
+            image_data TEXT DEFAULT '',
+            file_name TEXT DEFAULT '',
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_key, id);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_sender ON chat_messages(sender);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_recipient ON chat_messages(recipient);
         """
     )
 
@@ -116,15 +138,16 @@ def seed_users(conn: sqlite3.Connection) -> None:
         )
 
 
-def seed_services(conn: sqlite3.Connection) -> None:
+def seed_services(conn: sqlite3.Connection, role: str = "all") -> None:
     """Seed logical AS/TGS/ChatServer service records."""
     now = int(time.time() * 1000)
     tgs_host, tgs_port = service_address("tgs_server")
     chat_host, chat_port = service_address("chat_server")
-    services = (
-        ("tgs_server", tgs_host, tgs_port, service_key("tgs_server")),
-        ("chat_server", chat_host, chat_port, service_key("chat_server")),
-    )
+    services = []
+    if role in {"all", "as", "tgs"}:
+        services.append(("tgs_server", tgs_host, tgs_port, service_key("tgs_server")))
+    if role in {"all", "tgs", "chat"}:
+        services.append(("chat_server", chat_host, chat_port, service_key("chat_server")))
     for service_name, host, port, key in services:
         conn.execute(
             """
@@ -140,15 +163,35 @@ def seed_services(conn: sqlite3.Connection) -> None:
         )
 
 
-def main() -> None:
-    """Create tables and seed initial data."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+def init_database(path: Path, role: str) -> None:
+    """Create and seed one role-specific SQLite database."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
         create_schema(conn)
-        seed_users(conn)
-        seed_services(conn)
+        if role in {"all", "as"}:
+            seed_users(conn)
+        seed_services(conn, role)
         conn.commit()
-    print(f"Initialized database: {DB_PATH}")
+    print(f"Initialized {role} database: {path}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Create role-specific tables and seed initial data."""
+    parser = ArgumentParser(description="Initialize SafeChat SQLite databases.")
+    parser.add_argument(
+        "--role",
+        choices=VALID_ROLES,
+        default="all",
+        help="database role to initialize: as, tgs, chat, or all for local development",
+    )
+    args = parser.parse_args(argv)
+
+    if args.role == "all":
+        for role, path in ROLE_DB_PATHS.items():
+            init_database(path, role)
+        return
+
+    init_database(ROLE_DB_PATHS[args.role], args.role)
 
 
 if __name__ == "__main__":

@@ -21,10 +21,7 @@ CHAT_SERVICE = "chat_server"
 # RSA key pair for signing responses
 _private_key, _public_key = generate_key_pair()
 
-dao = SQLiteDAO()
-messages_lock = threading.Lock()
-chat_messages: list[dict] = []
-next_message_id = 1
+dao = SQLiteDAO(role="chat")
 online_lock = threading.Lock()
 online_users: dict[str, dict] = {}  # username -> {session_id, client_ip, last_seen, status}
 pubkey_lock = threading.Lock()
@@ -82,24 +79,8 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     if authenticator.client_addr and authenticator.client_addr != ticket.client_addr:
         return Message(type="ERROR", seq=message["seq"], body={"error": "authenticator does not match service ticket"})
 
-    # Verify session is valid (Single Sign-On check)
-    session_id = message["body"].get("session_id", "")
-    if not session_id:
-        return Message(type="ERROR", seq=message["seq"], body={"error": "session_id is required"})
-
-    active_session = dao.get_active_session(ticket.client_id)
-    if not active_session or active_session["session_id"] != session_id:
-        dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_FAILED_INVALID_SESSION")
-        return Message(
-            type="ERROR",
-            seq=message["seq"],
-            body={"error": "session is invalid or user logged in from another location"},
-        )
-
-    # Update session with service ticket info
-    dao.update_session_service_ticket(session_id, ticket.issued_at, ticket.expires_at)
-
     mutual_auth = encrypt_model({"timestamp_plus_one": authenticator.timestamp + 1}, ticket.session_key)
+    session_id = message["body"].get("session_id", "")
     _mark_user_online(ticket.client_id, session_id, address[0])
     
     # Check for offline messages and push them
@@ -291,14 +272,7 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     recipient = message["body"].get("recipient", "")
     session_key = _session_key(ticket.client_id, chat_type, recipient)
     
-    with messages_lock:
-        pending = [
-            item.copy()
-            for item in chat_messages
-            if item["id"] > last_seen_id
-            and item["session_key"] == session_key
-            and _can_read_message(ticket.client_id, item)
-        ]
+    pending = dao.list_chat_messages(session_key, last_seen_id, ticket.client_id)
     
     encrypted_messages = []
     for item in pending:
@@ -307,8 +281,8 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
             "sender": item["sender"],
             "recipient": item["recipient"],
             "chat_type": item["chat_type"],
-            "timestamp": item["timestamp"],
-            "message_cipher": encrypt_text(item["text"], ticket.session_key),
+            "timestamp": item.get("created_at", item.get("timestamp", 0)),
+            "message_cipher": encrypt_text(item.get("message_text", item.get("text", "")), ticket.session_key),
         }
         # Include image data if present
         if item.get("image_data"):
@@ -354,25 +328,16 @@ def _decrypt_valid_service_ticket(message: dict):
 
 
 def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str, image_data: str = "", file_name: str = "") -> int:
-    global next_message_id
-    with messages_lock:
-        message_id = next_message_id
-        next_message_id += 1
-        session_key = _session_key(sender, chat_type, recipient)
-        chat_messages.append(
-            {
-                "id": message_id,
-                "sender": sender,
-                "recipient": recipient,
-                "chat_type": chat_type,
-                "session_key": session_key,
-                "text": text,
-                "image_data": image_data,
-                "file_name": file_name,
-                "timestamp": int(time.time() * 1000),
-            }
-        )
-        return message_id
+    session_key = _session_key(sender, chat_type, recipient)
+    return dao.store_chat_message(
+        sender=sender,
+        recipient=recipient,
+        chat_type=chat_type,
+        session_key=session_key,
+        message_text=text,
+        image_data=image_data,
+        file_name=file_name,
+    )
 
 
 def _session_key(sender: str, chat_type: str, recipient: str) -> str:

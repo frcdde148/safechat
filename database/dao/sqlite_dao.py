@@ -14,8 +14,8 @@ from common.crypto.sha256 import verify_password
 class SQLiteDAO:
     """Small DAO wrapper used by the demo authentication servers."""
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        self.db_path = db_path or database_path()
+    def __init__(self, db_path: Path | None = None, role: str = "default") -> None:
+        self.db_path = db_path or database_path(role)
 
     def get_user(self, username: str) -> dict[str, Any] | None:
         """Fetch one user by username."""
@@ -218,6 +218,57 @@ class SQLiteDAO:
                 (recipient,),
             )
             conn.commit()
+
+    def store_chat_message(
+        self,
+        sender: str,
+        recipient: str,
+        chat_type: str,
+        session_key: str,
+        message_text: str,
+        image_data: str = "",
+        file_name: str = "",
+    ) -> int:
+        """Persist one traceable chat message and return its database id."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO chat_messages
+                    (sender, recipient, chat_type, session_key, message_text, image_data, file_name, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sender,
+                    recipient,
+                    chat_type,
+                    session_key,
+                    message_text,
+                    image_data,
+                    file_name,
+                    int(time.time() * 1000),
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def list_chat_messages(self, session_key: str, after_id: int, username: str) -> list[dict[str, Any]]:
+        """List persisted messages in a session that the user is allowed to read."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM chat_messages
+                WHERE session_key = ?
+                  AND id > ?
+                  AND (
+                    chat_type != 'private'
+                    OR sender = ?
+                    OR recipient = ?
+                  )
+                ORDER BY id ASC
+                """,
+                (session_key, after_id, username, username),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

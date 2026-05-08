@@ -46,7 +46,7 @@ class TicketGrantingServer:
     TGS_SECRET_KEY = "tgs-server-secret-key-for-audit-encryption"
     
     def __init__(self, dao: SQLiteDAO | None = None) -> None:
-        self.dao = dao or SQLiteDAO()
+        self.dao = dao or SQLiteDAO(role="tgs")
         self._private_key, self._public_key = generate_key_pair()
     
     def request_service_ticket(self, ticket_tgt: dict[str, str], authenticator: dict[str, str], 

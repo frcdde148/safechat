@@ -48,7 +48,7 @@ class AuthenticationServer:
     AS_SECRET_KEY = "as-server-secret-key-for-audit-encryption"
     
     def __init__(self, dao: SQLiteDAO | None = None) -> None:
-        self.dao = dao or SQLiteDAO()
+        self.dao = dao or SQLiteDAO(role="as")
         self._private_key, self._public_key = generate_key_pair()
     
     def authenticate(
