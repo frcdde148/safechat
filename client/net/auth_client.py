@@ -26,7 +26,9 @@ class AuthClient:
         self.tgt: dict[str, str] | None = None
         self.service_ticket: dict[str, str] | None = None
         self.session_key_c_tgs = ""
+        self.encrypted_session_key_c_tgs: dict[str, str] | None = None  # 保存加密的 session_key
         self.session_key_c_v = ""
+        self.encrypted_session_key_c_v: dict[str, str] | None = None  # 保存加密的 session_key
         self.session_id = ""
         self.last_message_ids: dict[str, int] = {}
         self.private_key_pem, self.public_key_pem = generate_key_pair()
@@ -78,6 +80,9 @@ class AuthClient:
         encrypted_session_key = response["body"]["encrypted_session_key"]
         encrypted_tgt = response["body"]["ticket_tgt"]
         
+        # 保存加密的 session_key
+        self.encrypted_session_key_c_tgs = encrypted_session_key
+        
         self.session_key_c_tgs = decrypt_text(
             encrypted_session_key["ciphertext"],
             encrypted_session_key["iv"],
@@ -91,7 +96,7 @@ class AuthClient:
         return self._format_state(
             {
                 "client_saved": {
-                    "session_key_c_tgs": self.session_key_c_tgs,
+                    "encrypted_session_key": self.encrypted_session_key_c_tgs,
                     "ticket_tgt": self.tgt,
                 }
             }
@@ -119,6 +124,10 @@ class AuthClient:
         self._raise_on_error(response)
         
         encrypted_session_key = response["body"]["encrypted_session_key"]
+        
+        # 保存加密的 session_key
+        self.encrypted_session_key_c_v = encrypted_session_key
+        
         self.session_key_c_v = decrypt_text(
             encrypted_session_key["ciphertext"],
             encrypted_session_key["iv"],
@@ -133,7 +142,7 @@ class AuthClient:
         return self._format_state(
             {
                 "client_saved": {
-                    "session_key_c_v": self.session_key_c_v,
+                    "encrypted_session_key": self.encrypted_session_key_c_v,
                     "service_ticket": self.service_ticket,
                     "chat_server": f"{self.chat_host}:{self.chat_port}",
                 }
@@ -144,14 +153,19 @@ class AuthClient:
         if not self.service_ticket:
             raise ValueError("missing service ticket; run C_TGS_REQ first")
         authenticator = encrypt_model(issue_authenticator(self.username, ""), self.session_key_c_v)
+        body = {
+            "service_ticket": self.service_ticket,
+            "authenticator": authenticator,
+            "session_id": self.session_id,
+        }
+        digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
             type="C_V_REQ",
             seq=self._next_seq(),
-            body={
-                "service_ticket": self.service_ticket,
-                "authenticator": authenticator,
-                "session_id": self.session_id,
-            },
+            body=body,
+            hmac=digest,
+            sig=signature,
+            pubkey=self.public_key_pem,
         )
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)

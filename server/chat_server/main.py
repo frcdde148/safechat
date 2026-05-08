@@ -8,15 +8,18 @@ import time
 
 from common.config.settings import server_bind_address
 from common.crypto.des import decrypt_text, encrypt_text
+from common.crypto.rsa_sign import generate_key_pair, sign_text
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model
 from common.protocol.message import Message
-from common.protocol.security import verify_body_signature
+from common.protocol.security import body_digest, verify_body_signature
 from database.dao.sqlite_dao import SQLiteDAO
 from server.simple_tcp_server import serve
 
 
 CHAT_SERVICE = "chat_server"
 
+# RSA key pair for signing responses
+_private_key, _public_key = generate_key_pair()
 
 dao = SQLiteDAO()
 messages_lock = threading.Lock()
@@ -25,6 +28,18 @@ next_message_id = 1
 online_lock = threading.Lock()
 online_users: dict[str, dict] = {}  # username -> {session_id, client_ip, last_seen, status}
 ONLINE_TIMEOUT_MS = 30_000
+
+
+def _sign_response(response_body: dict) -> tuple[str, str]:
+    """Sign response body with RSA."""
+    digest = body_digest(response_body)
+    signature = sign_text(digest, _private_key)
+    return digest, signature
+
+
+def _get_public_key() -> str:
+    """Return the ChatServer's public key."""
+    return _public_key
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> Message:
@@ -51,6 +66,14 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     chat = dao.get_service(CHAT_SERVICE)
     if not chat:
         return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
+
+    # Verify message signature
+    message_hmac = message.get("hmac", "")
+    message_sig = message.get("sig", "")
+    message_pubkey = message.get("pubkey", "")
+    if not verify_body_signature(message["body"], message_hmac, message_sig, message_pubkey):
+        dao.add_audit_log("", "unknown", address[0], "CHAT_AUTH_FAILED_INVALID_SIGNATURE")
+        return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
 
     ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
     if not ticket.is_valid():
@@ -103,15 +126,23 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
         dao.delete_offline_message(msg["id"])
     
     dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_OK")
+    
+    # Prepare response body and sign it
+    response_body = {
+        "client_id": ticket.client_id,
+        "mutual_auth": mutual_auth,
+        "offline_messages": offline_messages_data,
+        "room": "public",
+    }
+    digest, signature = _sign_response(response_body)
+    
     return Message(
         type="V_C_REP",
         seq=message["seq"],
-        body={
-            "client_id": ticket.client_id,
-            "mutual_auth": mutual_auth,
-            "offline_messages": offline_messages_data,
-            "room": "public",
-        },
+        body=response_body,
+        hmac=digest,
+        sig=signature,
+        pubkey=_get_public_key(),
     )
 
 
