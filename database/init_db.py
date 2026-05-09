@@ -88,6 +88,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
             service_ticket_issued_at INTEGER,
             service_ticket_expires_at INTEGER,
             last_seen INTEGER NOT NULL,
+            client_type TEXT NOT NULL DEFAULT 'client',
             status TEXT NOT NULL DEFAULT 'active',
             FOREIGN KEY (username) REFERENCES users(username)
         );
@@ -134,14 +135,24 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_mute_rules_target ON mute_rules(target_type, target_value, status);
         CREATE INDEX IF NOT EXISTS idx_mute_rules_expires ON mute_rules(expires_at);
+
+        CREATE TABLE IF NOT EXISTS session_revocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            revoked_by TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            revoked_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_revocations_user ON session_revocations(username, status);
         """
     )
 
 
-def seed_users(conn: sqlite3.Connection) -> None:
-    """Seed four course-demo users with salted SHA-256 hashes."""
+def seed_auth_users(conn: sqlite3.Connection) -> None:
+    """Seed course-demo users with salted SHA-256 hashes when missing."""
     now = int(time.time() * 1000)
-    for username, password, role in SEED_USERS:
+    for username, password, user_role in SEED_USERS:
         salt = os.urandom(32).hex()
         conn.execute(
             """
@@ -149,9 +160,22 @@ def seed_users(conn: sqlite3.Connection) -> None:
                 (username, password_hash, password_plain, salt, role, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (username, hash_password(password, salt), password, salt, role, now),
+            (username, hash_password(password, salt), password, salt, user_role, now),
         )
-        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
+
+
+def seed_role_users(conn: sqlite3.Connection) -> None:
+    """Seed non-AS user role copies for contact lists when missing."""
+    now = int(time.time() * 1000)
+    for username, _password, user_role in SEED_USERS:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO users
+                (username, password_hash, password_plain, salt, role, created_at)
+            VALUES (?, '', '', '', ?, ?)
+            """,
+            (username, user_role, now),
+        )
 
 
 def seed_services(conn: sqlite3.Connection, role: str = "all") -> None:
@@ -184,11 +208,22 @@ def init_database(path: Path, role: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         create_schema(conn)
-        if role in {"all", "as", "tgs", "chat"}:
-            seed_users(conn)
+        if role in {"all", "as"}:
+            seed_auth_users(conn)
+        elif role == "chat":
+            seed_role_users(conn)
         seed_services(conn, role)
         conn.commit()
     print(f"Initialized {role} database: {path}")
+
+
+def ensure_database(role: str) -> Path:
+    """Ensure one service database is ready without resetting existing data."""
+    if role not in ROLE_DB_PATHS:
+        raise ValueError(f"unknown database role: {role}")
+    path = ROLE_DB_PATHS[role]
+    init_database(path, role)
+    return path
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -15,18 +15,18 @@ SETTINGS_PATH = PROJECT_ROOT / "common" / "config" / "settings.json"
 DEFAULT_SETTINGS: dict[str, Any] = {
     "as_server": {
         "bind_host": "127.0.0.1",
-        "host": "127.0.0.1",
+        "public_host": "127.0.0.1",
         "port": 8000,
     },
     "tgs_server": {
         "bind_host": "127.0.0.1",
-        "host": "127.0.0.1",
+        "public_host": "127.0.0.1",
         "port": 8001,
         "service_key": "demo-tgs-key",
     },
     "chat_server": {
         "bind_host": "127.0.0.1",
-        "host": "127.0.0.1",
+        "public_host": "127.0.0.1",
         "port": 9000,
         "service_name": "chat_server",
         "service_key": "demo-chat-key",
@@ -77,13 +77,13 @@ def database_path(role: str = "default") -> Path:
 def server_bind_address(section: str) -> tuple[str, int]:
     """Return the configured bind host/port for a server section."""
     config = load_settings()[section]
-    return config.get("bind_host", config["host"]), int(config["port"])
+    return str(config["bind_host"]), int(config["port"])
 
 
 def service_address(section: str) -> tuple[str, int]:
     """Return the advertised service host/port stored in the service registry."""
     config = load_settings()[section]
-    return config["host"], int(config["port"])
+    return str(config["public_host"]), int(config["port"])
 
 
 def service_key(section: str) -> str:

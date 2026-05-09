@@ -6,12 +6,13 @@ import json
 import threading
 import time
 
-from common.config.settings import server_bind_address
+from common.config.settings import server_bind_address, service_address
 from common.crypto.des import decrypt_text, encrypt_text
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model
 from common.protocol.message import Message
 from common.protocol.security import verify_body_signature
 from database.dao.sqlite_dao import SQLiteDAO
+from database.init_db import ensure_database
 from server.simple_tcp_server import serve
 
 
@@ -49,6 +50,8 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
         return _handle_chat_admin_audit_query(message, address)
     if message["type"] == "CHAT_ADMIN_SET_ROLE":
         return _handle_chat_admin_set_role(message, address)
+    if message["type"] == "CHAT_ADMIN_DELETE_USER":
+        return _handle_chat_admin_delete_user(message, address)
     return Message(
         type="ERROR",
         seq=message["seq"],
@@ -82,6 +85,7 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     mutual_auth = encrypt_model({"timestamp_plus_one": authenticator.timestamp + 1}, ticket.session_key)
     session_id = message["body"].get("session_id", "")
     _mark_user_online(ticket.client_id, session_id, address[0])
+    dao.clear_session_revocations(ticket.client_id)
     
     # Check for offline messages and push them
     offline_messages = dao.get_offline_messages(ticket.client_id)
@@ -119,6 +123,9 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
 def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     """Decrypt one chat message and return an encrypted ACK."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_signed_message_for_ticket(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "CHAT_SIGN_FAILED")
@@ -205,6 +212,9 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
                 seq=message["seq"],
                 body={"error": f"service ticket is expired: {ticket.validity_debug()}"},
             )
+        revoked = _revoked_session_error(message, ticket, address)
+        if revoked:
+            return revoked
         if not _verify_signed_message_for_ticket(message, ticket):
             return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
         
@@ -262,11 +272,12 @@ def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
     """Verify digest/RSA signature and bind the first post-login public key to the user."""
     if not message.get("hmac") or not message.get("sig") or not message.get("pubkey"):
         return False
+    pubkey_scope = f"{ticket.client_id}:{ticket.session_key}"
     with pubkey_lock:
-        existing_pubkey = session_pubkeys.get(ticket.client_id)
+        existing_pubkey = session_pubkeys.get(pubkey_scope)
         if existing_pubkey and existing_pubkey != message["pubkey"]:
             return False
-        session_pubkeys.setdefault(ticket.client_id, message["pubkey"])
+        session_pubkeys.setdefault(pubkey_scope, message["pubkey"])
     return verify_body_signature(
         message["body"],
         message["hmac"],
@@ -297,6 +308,9 @@ def _mute_error(username: str) -> str:
 def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     """Return encrypted group-chat messages newer than last_seen_id."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     last_seen_id = int(message["body"].get("last_seen_id", 0))
     chat_type = message["body"].get("chat_type", "group")
@@ -335,6 +349,9 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
 def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
     """Return the full contact list with online/offline state."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     users = _current_contact_users()
     dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST", content_enc=str(len(users)))
@@ -351,6 +368,9 @@ def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
 def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
     """Mute one user after verifying the operator is an administrator."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_admin_request(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_MUTE_DENIED")
@@ -398,6 +418,9 @@ def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
 def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Message:
     """Revoke active user mute rules after administrator verification."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_admin_request(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_UNMUTE_DENIED")
@@ -429,6 +452,9 @@ def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Messag
 def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
     """Remove one user from ChatServer's in-memory online table."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_admin_request(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_KICK_DENIED")
@@ -443,6 +469,7 @@ def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
     with online_lock:
         existed = target in online_users
         online_users.pop(target, None)
+    dao.add_session_revocation(target, ticket.client_id, "管理员撤销会话")
     dao.add_audit_log(
         "",
         ticket.client_id,
@@ -464,6 +491,9 @@ def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
 def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) -> Message:
     """Return chat messages for admin review."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
@@ -496,6 +526,9 @@ def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) ->
 def _handle_chat_admin_audit_query(message: dict, address: tuple[str, int]) -> Message:
     """Return ChatServer audit logs for admin review."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
@@ -517,6 +550,9 @@ def _handle_chat_admin_audit_query(message: dict, address: tuple[str, int]) -> M
 def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Message:
     """Update ChatServer-local user role."""
     ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
     _update_user_last_seen(ticket.client_id)
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
@@ -525,10 +561,38 @@ def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Mess
     if role not in {"user", "admin"}:
         return Message(type="ERROR", seq=message["seq"], body={"error": "invalid role"})
     with dao._connect() as conn:
-        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
+        now = int(time.time() * 1000)
+        conn.execute(
+            """
+            INSERT INTO users (username, password_hash, password_plain, salt, role, created_at)
+            VALUES (?, '', '', '', ?, ?)
+            ON CONFLICT(username) DO UPDATE SET role = excluded.role
+            """,
+            (target, role, now),
+        )
         conn.commit()
     dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_SET_ROLE", content_enc=json.dumps({"target": target, "role": role}, ensure_ascii=False))
     return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"updated": target, "role": role})
+
+
+def _handle_chat_admin_delete_user(message: dict, address: tuple[str, int]) -> Message:
+    """Delete ChatServer-local contact copy while preserving chat history."""
+    ticket = _decrypt_valid_service_ticket(message)
+    revoked = _revoked_session_error(message, ticket, address)
+    if revoked:
+        return revoked
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+    target = message["body"].get("target_username", "").strip()
+    if not target:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "target_username is required"})
+    with online_lock:
+        online_users.pop(target, None)
+    dao.add_session_revocation(target, ticket.client_id, "用户已被管理员删除")
+    deleted = dao.delete_user(target)
+    dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_DELETE_USER", content_enc=json.dumps({"target": target, "deleted": deleted}, ensure_ascii=False))
+    return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"target_username": target, "deleted": deleted})
 
 
 def _decrypt_valid_service_ticket(message: dict):
@@ -539,6 +603,31 @@ def _decrypt_valid_service_ticket(message: dict):
     if not ticket.is_valid():
         raise ValueError(f"service ticket is expired: {ticket.validity_debug()}")
     return ticket
+
+
+def _revoked_session_error(message: dict, ticket, address: tuple[str, int]) -> Message | None:
+    """Reject requests that use a session revoked by an administrator."""
+    revocation = dao.get_active_session_revocation(ticket.client_id)
+    if not revocation:
+        return None
+    with online_lock:
+        online_users.pop(ticket.client_id, None)
+    reason = revocation.get("reason") or "会话已被管理员撤销"
+    dao.add_audit_log(
+        "",
+        ticket.client_id,
+        address[0],
+        "CHAT_SESSION_REVOKED",
+        content_enc=json.dumps({"reason": reason, "revoked_at": revocation.get("revoked_at", 0)}, ensure_ascii=False),
+    )
+    return Message(
+        type="ERROR",
+        seq=message["seq"],
+        body={
+            "error": f"session revoked; please re-login: {reason}",
+            "code": "SESSION_REVOKED",
+        },
+    )
 
 
 def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str, image_data: str = "", file_name: str = "") -> int:
@@ -621,7 +710,12 @@ def _current_contact_users() -> list[dict]:
 
 def main() -> None:
     """Start the chat server."""
+    db_path = ensure_database("chat")
     host, port = server_bind_address("chat_server")
+    public_host, public_port = service_address("chat_server")
+    print(f"Starting ChatServer on {host}:{port}")
+    print(f"ChatServer public address: {public_host}:{public_port}")
+    print(f"ChatServer database: {db_path}")
     serve(host, port, "ChatServer", handle_message)
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from common.config.settings import database_path
-from common.crypto.sha256 import verify_password
+from common.crypto.sha256 import new_salt_hex, salted_password_hash, verify_password
 
 
 class SQLiteDAO:
@@ -99,12 +99,111 @@ class SQLiteDAO:
             ).fetchone()
             return dict(row) if row else None
 
+    def add_session_revocation(self, username: str, revoked_by: str, reason: str = "") -> int:
+        """Mark a user's current ChatServer session state as revoked."""
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            self._ensure_session_revocations_table(conn)
+            conn.execute(
+                """
+                UPDATE session_revocations
+                SET status = 'cleared'
+                WHERE username = ? AND status = 'active'
+                """,
+                (username,),
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO session_revocations (username, revoked_by, reason, revoked_at, status)
+                VALUES (?, ?, ?, ?, 'active')
+                """,
+                (username, revoked_by, reason, now),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def get_active_session_revocation(self, username: str) -> dict[str, Any] | None:
+        """Return the active session revocation for a user, if any."""
+        with self._connect() as conn:
+            self._ensure_session_revocations_table(conn)
+            row = conn.execute(
+                """
+                SELECT * FROM session_revocations
+                WHERE username = ? AND status = 'active'
+                ORDER BY revoked_at DESC
+                LIMIT 1
+                """,
+                (username,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def clear_session_revocations(self, username: str) -> int:
+        """Clear active revocations after a fresh Kerberos service login."""
+        with self._connect() as conn:
+            self._ensure_session_revocations_table(conn)
+            cursor = conn.execute(
+                """
+                UPDATE session_revocations
+                SET status = 'cleared'
+                WHERE username = ? AND status = 'active'
+                """,
+                (username,),
+            )
+            conn.commit()
+            return int(cursor.rowcount)
+
     def verify_user_password(self, username: str, password: str) -> bool:
         """Return whether username/password matches the stored salted hash."""
         user = self.get_user(username)
         if not user:
             return False
         return verify_password(password, user["salt"], user["password_hash"])
+
+    def create_user(self, username: str, password: str, role: str = "user") -> None:
+        """Create one user with a salted password hash."""
+        now = int(time.time() * 1000)
+        salt = new_salt_hex()
+        password_hash = salted_password_hash(password, salt)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO users (username, password_hash, password_plain, salt, role, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (username, password_hash, password, salt, role, now),
+            )
+            conn.commit()
+
+    def update_user_password(self, username: str, password: str) -> bool:
+        """Replace one user's password hash and return whether a row changed."""
+        salt = new_salt_hex()
+        password_hash = salted_password_hash(password, salt)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET password_hash = ?, password_plain = ?, salt = ?
+                WHERE username = ?
+                """,
+                (password_hash, password, salt, username),
+            )
+            conn.commit()
+            return int(cursor.rowcount) > 0
+
+    def count_admin_users(self) -> int:
+        """Return number of users with admin role."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'admin'").fetchone()
+            return int(row["total"] if row else 0)
+
+    def delete_user(self, username: str) -> bool:
+        """Delete a user account while preserving audit and chat history."""
+        with self._connect() as conn:
+            self._ensure_session_revocations_table(conn)
+            cursor = conn.execute("DELETE FROM users WHERE username = ?", (username,))
+            conn.execute("UPDATE active_sessions SET status = 'invalidated' WHERE username = ?", (username,))
+            conn.commit()
+            return int(cursor.rowcount) > 0
 
     def get_service(self, service_name: str) -> dict[str, Any] | None:
         """Fetch one service record by logical service name."""
@@ -146,17 +245,21 @@ class SQLiteDAO:
             ).fetchone()
             return row is not None
 
-    def get_active_session(self, username: str) -> dict[str, Any] | None:
-        """Get the active session for a user if exists."""
+    def get_active_session(self, username: str, client_type: str = "client") -> dict[str, Any] | None:
+        """Get the active session for a user and client type if exists."""
         now = int(time.time() * 1000)
         with self._connect() as conn:
+            self._ensure_active_sessions_client_type(conn)
             row = conn.execute(
                 """
                 SELECT * FROM active_sessions
-                WHERE username = ? AND status = 'active' AND tgt_expires_at >= ?
+                WHERE username = ?
+                  AND status = 'active'
+                  AND tgt_expires_at >= ?
+                  AND COALESCE(client_type, 'client') = ?
                 LIMIT 1
                 """,
-                (username, now),
+                (username, now, client_type),
             ).fetchone()
             return dict(row) if row else None
 
@@ -167,24 +270,28 @@ class SQLiteDAO:
         client_ip: str,
         tgt_issued_at: int,
         tgt_expires_at: int,
+        invalidate_existing: bool = True,
+        client_type: str = "client",
     ) -> None:
         """Create a new session, invalidating any existing sessions for the user."""
         with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE active_sessions
-                SET status = 'invalidated'
-                WHERE username = ? AND status = 'active'
-                """,
-                (username,),
-            )
+            self._ensure_active_sessions_client_type(conn)
+            if invalidate_existing:
+                conn.execute(
+                    """
+                    UPDATE active_sessions
+                    SET status = 'invalidated'
+                    WHERE username = ? AND status = 'active' AND COALESCE(client_type, 'client') = ?
+                    """,
+                    (username, client_type),
+                )
             conn.execute(
                 """
                 INSERT INTO active_sessions
-                    (username, session_id, client_ip, tgt_issued_at, tgt_expires_at, last_seen, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'active')
+                    (username, session_id, client_ip, tgt_issued_at, tgt_expires_at, last_seen, client_type, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
                 """,
-                (username, session_id, client_ip, tgt_issued_at, tgt_expires_at, int(time.time() * 1000)),
+                (username, session_id, client_ip, tgt_issued_at, tgt_expires_at, int(time.time() * 1000), client_type),
             )
             conn.commit()
 
@@ -350,3 +457,30 @@ class SQLiteDAO:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _ensure_session_revocations_table(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_revocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                revoked_by TEXT NOT NULL,
+                reason TEXT DEFAULT '',
+                revoked_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_session_revocations_user
+            ON session_revocations(username, status)
+            """
+        )
+
+    @staticmethod
+    def _ensure_active_sessions_client_type(conn: sqlite3.Connection) -> None:
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(active_sessions)").fetchall()]
+        if "client_type" not in columns:
+            conn.execute("ALTER TABLE active_sessions ADD COLUMN client_type TEXT NOT NULL DEFAULT 'client'")

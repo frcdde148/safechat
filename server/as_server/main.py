@@ -5,10 +5,12 @@ from __future__ import annotations
 import uuid
 import json
 import time
+import re
 
-from common.config.settings import server_bind_address
+from common.config.settings import server_bind_address, service_address
 from common.protocol.admin_token import issue_admin_token, verify_admin_token
 from common.models.tickets import decrypt_authenticator, decrypt_ticket
+from database.init_db import ensure_database
 from server.as_server.core import AuthenticationServer
 from server.simple_tcp_server import serve
 
@@ -126,16 +128,61 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
                     "SELECT username, role, created_at FROM users ORDER BY username"
                 ).fetchall()
                 return _envelope(message, "AS_ADMIN_ACK", {"users": [dict(row) for row in rows]})
+        if action == "AS_ADMIN_CREATE_USER":
+            username = str(body.get("username", "")).strip()
+            password = str(body.get("password", ""))
+            role = str(body.get("role", "user"))
+            error = _validate_user_fields(username, password, role)
+            if error:
+                return _admin_error(message, error)
+            if dao.get_user(username):
+                return _admin_error(message, "用户名已存在")
+            dao.create_user(username, password, role)
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_CREATE_USER", json.dumps({"target": username, "role": role}, ensure_ascii=False))
+            return _envelope(message, "AS_ADMIN_ACK", {"username": username, "role": role})
+        if action == "AS_ADMIN_DELETE_USER":
+            target = str(body.get("target_username", "")).strip()
+            if not target:
+                return _admin_error(message, "目标用户名不能为空")
+            target_user = dao.get_user(target)
+            if not target_user:
+                return _admin_error(message, "目标用户不存在")
+            if target == admin_user:
+                return _admin_error(message, "不能删除当前管理员自己")
+            if target_user.get("role") == "admin" and dao.count_admin_users() <= 1:
+                return _admin_error(message, "至少需要保留一个管理员")
+            dao.delete_user(target)
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_DELETE_USER", target)
+            return _envelope(message, "AS_ADMIN_ACK", {"target_username": target})
         if action == "AS_ADMIN_SET_ROLE":
             target = body.get("target_username", "")
             role = body.get("role", "user")
             if role not in {"user", "admin"}:
-                return _admin_error(message, "invalid role")
+                return _admin_error(message, "角色无效")
+            target_user = dao.get_user(target)
+            if not target_user:
+                return _admin_error(message, "目标用户不存在")
+            if target == admin_user:
+                return _admin_error(message, "不能修改当前管理员自己的角色")
+            if target_user.get("role") == "admin" and role == "user" and dao.count_admin_users() <= 1:
+                return _admin_error(message, "至少需要保留一个管理员")
             with dao._connect() as conn:
                 conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
                 conn.commit()
             dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_SET_ROLE", json.dumps({"target": target, "role": role}, ensure_ascii=False))
             return _envelope(message, "AS_ADMIN_ACK", {"updated": target, "role": role})
+        if action == "AS_ADMIN_RESET_PASSWORD":
+            target = str(body.get("target_username", "")).strip()
+            password = str(body.get("password", ""))
+            if not target:
+                return _admin_error(message, "目标用户名不能为空")
+            if len(password) < 6:
+                return _admin_error(message, "密码长度至少为 6 位")
+            if not dao.update_user_password(target, password):
+                return _admin_error(message, "目标用户不存在")
+            dao.invalidate_user_sessions(target)
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_RESET_PASSWORD", target)
+            return _envelope(message, "AS_ADMIN_ACK", {"target_username": target})
         if action == "AS_ADMIN_LIST_SESSIONS":
             with dao._connect() as conn:
                 rows = conn.execute(
@@ -195,6 +242,16 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
     return _admin_error(message, f"unknown AS admin action: {action}")
 
 
+def _validate_user_fields(username: str, password: str, role: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,32}", username):
+        return "用户名必须为 3-32 位字母、数字或下划线"
+    if len(password) < 6:
+        return "密码长度至少为 6 位"
+    if role not in {"user", "admin"}:
+        return "角色无效"
+    return ""
+
+
 def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
     """Issue an admin token after validating the existing Kerberos TGT."""
     dao = as_server.dao
@@ -223,8 +280,12 @@ def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
 
 def main() -> None:
     """Start the authentication server."""
+    db_path = ensure_database("as")
     host, port = server_bind_address("as_server")
+    public_host, public_port = service_address("as_server")
     print(f"Starting AS server on {host}:{port}")
+    print(f"AS public address: {public_host}:{public_port}")
+    print(f"AS database: {db_path}")
     serve(host, port, "AS Server", handle_message)
 
 

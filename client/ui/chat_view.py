@@ -47,7 +47,7 @@ class MessageBubble(QFrame):
         self.avatar_label = QLabel()
         self.avatar_label.setFixedSize(40, 40)
         self.avatar_label.setAlignment(Qt.AlignCenter)
-        self.avatar_label.setText(username[0].upper() if username else "?")
+        self.avatar_label.setText(self._avatar_initial(username))
         self.avatar_label.setStyleSheet(self._avatar_style(username))
         
         # Create content widget (username + message + time)
@@ -228,6 +228,13 @@ class MessageBubble(QFrame):
         
         dialog.showMaximized()
         dialog.exec_()
+
+    @staticmethod
+    def _avatar_initial(username: str) -> str:
+        text = str(username or "").strip()
+        if not text:
+            return "用"
+        return text[0].upper()
 
     @staticmethod
     def _avatar_style(username: str) -> str:

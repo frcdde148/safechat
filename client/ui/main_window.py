@@ -146,7 +146,12 @@ class MainWindow(QMainWindow):
         if self._auth_client:
             offline_messages = self._auth_client.get_offline_messages()
             for msg in offline_messages:
-                self.chat_view.add_message(f"{msg['sender']}：{msg['text']}", "other", msg.get("ciphertext"))
+                self.chat_view.add_message(
+                    msg["text"],
+                    "peer",
+                    msg.get("ciphertext", ""),
+                    username=msg.get("sender", ""),
+                )
         
         self._refresh_online_users()
         self._poll_timer.start()
@@ -237,7 +242,12 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _is_ticket_expired_error(exc: Exception) -> bool:
         message = str(exc).lower()
-        return "expired" in message and ("ticket" in message or "tgt" in message)
+        return (
+            ("expired" in message and ("ticket" in message or "tgt" in message))
+            or "session revoked" in message
+            or "session_revoked" in message
+            or "re-login" in message
+        )
 
     def _mark_reauth_required(self, reason: str) -> None:
         self.chat_view.security_status.set_value("票据已过期，请重新认证", "errorBadge")
@@ -306,7 +316,7 @@ class MainWindow(QMainWindow):
             ciphertext = message.get("ciphertext", "")
             image_data = message.get("image_data", "")
             file_name = message.get("file_name", "")
-            username = message["sender"] if not is_self else self._auth_client.username
+            username = message.get("sender") or self._auth_client.username
             
             # Convert timestamp from milliseconds to readable format
             timestamp = message.get("timestamp", "")

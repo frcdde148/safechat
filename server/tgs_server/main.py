@@ -3,8 +3,9 @@
 from __future__ import annotations
 import uuid
 
-from common.config.settings import server_bind_address
+from common.config.settings import server_bind_address, service_address
 from common.protocol.admin_token import verify_admin_token
+from database.init_db import ensure_database
 from server.simple_tcp_server import serve
 from server.tgs_server.core import TicketGrantingServer
 
@@ -99,8 +100,7 @@ def _require_admin(message: dict) -> tuple[bool, str]:
     if not payload:
         return False, ""
     username = str(payload.get("username", ""))
-    user = tgs_server.dao.get_user(username)
-    return bool(user and user.get("role") == "admin"), username
+    return bool(username), username
 
 
 def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
@@ -129,8 +129,12 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
 
 def main() -> None:
     """Start the ticket granting server."""
+    db_path = ensure_database("tgs")
     host, port = server_bind_address("tgs_server")
+    public_host, public_port = service_address("tgs_server")
     print(f"Starting TGS server on {host}:{port}")
+    print(f"TGS public address: {public_host}:{public_port}")
+    print(f"TGS database: {db_path}")
     serve(host, port, "TGS Server", handle_message)
 
 
