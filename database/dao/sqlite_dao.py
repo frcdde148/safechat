@@ -23,6 +23,82 @@ class SQLiteDAO:
             row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             return dict(row) if row else None
 
+    def list_users(self) -> list[dict[str, Any]]:
+        """Return all known users for contact-list display."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT username, role
+                FROM users
+                ORDER BY username ASC
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def add_mute_rule(
+        self,
+        target_type: str,
+        target_value: str,
+        muted_by: str,
+        expires_at: int,
+        reason: str = "",
+        scope: str = "global",
+    ) -> int:
+        """Create or replace an active mute rule for one user or IP."""
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE mute_rules
+                SET status = 'revoked'
+                WHERE target_type = ? AND target_value = ? AND scope = ? AND status = 'active'
+                """,
+                (target_type, target_value, scope),
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO mute_rules
+                    (target_type, target_value, scope, reason, muted_by, created_at, expires_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+                """,
+                (target_type, target_value, scope, reason, muted_by, now, expires_at),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def revoke_mute_rule(self, target_type: str, target_value: str, scope: str = "global") -> int:
+        """Revoke active mute rules for one target and return affected row count."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE mute_rules
+                SET status = 'revoked'
+                WHERE target_type = ? AND target_value = ? AND scope = ? AND status = 'active'
+                """,
+                (target_type, target_value, scope),
+            )
+            conn.commit()
+            return int(cursor.rowcount)
+
+    def get_active_mute(self, target_type: str, target_value: str, scope: str = "global") -> dict[str, Any] | None:
+        """Return an active, unexpired mute rule for one target."""
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM mute_rules
+                WHERE target_type = ?
+                  AND target_value = ?
+                  AND scope = ?
+                  AND status = 'active'
+                  AND expires_at > ?
+                ORDER BY expires_at DESC
+                LIMIT 1
+                """,
+                (target_type, target_value, scope, now),
+            ).fetchone()
+            return dict(row) if row else None
+
     def verify_user_password(self, username: str, password: str) -> bool:
         """Return whether username/password matches the stored salted hash."""
         user = self.get_user(username)

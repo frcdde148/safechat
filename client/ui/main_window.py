@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QInputDialog, QMessageBox
+from PyQt5.QtCore import QThread, QTimer
+from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QMessageBox
 
 from client.net.auth_client import AuthClient
 from client.ui.auth_flow_view import AUTH_STAGES
@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self._stage_index = 0
         self._auth_payload: dict = {}
         self._auth_client: AuthClient | None = None
+        self._image_send_threads: list[QThread] = []
         self._is_relogin = False
         self._stage_timer = QTimer(self)
         self._stage_timer.setInterval(1100)
@@ -43,10 +44,12 @@ class MainWindow(QMainWindow):
         self.login_view.enter_chat_requested.connect(self._enter_chat)
         self.chat_view.message_send_requested.connect(self._send_chat_message)
         self.chat_view.session_changed.connect(self._switch_chat_session)
-        self.chat_view.start_private_chat_requested.connect(self._start_private_chat)
+        self.chat_view.private_chat_requested.connect(self._open_private_chat)
         self.chat_view.return_to_group_chat_requested.connect(self._return_to_group_chat)
         self.chat_view.relogin_requested.connect(self._handle_relogin)
         self.chat_view.image_send_requested.connect(self._send_image)
+        self.chat_view.mute_user_requested.connect(self._mute_user)
+        self.chat_view.unmute_user_requested.connect(self._unmute_user)
 
     def _start_demo_auth(self, payload: dict) -> None:
         """Run a local UI authentication demo until real controllers are wired."""
@@ -79,13 +82,16 @@ class MainWindow(QMainWindow):
                 self._is_relogin = False
                 try:
                     self._enter_chat()
-                    self.chat_view.add_message("系统提示：重新登录成功，会话已刷新", "system")
-                    self.chat_view.security_status.set_value("会话已刷新", "okBadge")
+                    self.chat_view.add_message("系统提示：重新认证成功，票据和会话密钥已刷新", "system")
+                    self.chat_view.security_status.set_value("重新认证成功", "okBadge")
                 except Exception as exc:
-                    self.chat_view.add_message(f"安全提示：重新登录后进入聊天室失败，{exc}", "security")
+                    self.chat_view.add_message(f"安全提示：重新认证后进入聊天室失败，{exc}", "security")
                     self.chat_view.security_status.set_value("进入聊天室失败", "errorBadge")
                 finally:
                     self.chat_view.relogin_button.setEnabled(True)
+                    self.chat_view.relogin_button.setObjectName("secondaryButton")
+                    self.chat_view.relogin_button.style().unpolish(self.chat_view.relogin_button)
+                    self.chat_view.relogin_button.style().polish(self.chat_view.relogin_button)
                 return
             
             # Normal login completion
@@ -170,18 +176,16 @@ class MainWindow(QMainWindow):
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
             ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
-            
+
+            self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
             ack = result.get("ack", "")
             if ack:
-                self.chat_view.add_message(f"安全回执：{ack}", "security")
                 if "对方离线" in ack or "已存储" in ack:
-                    # 对方离线，消息存储在服务器，需要直接显示自己发送的消息
-                    self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
-                    self.chat_view.security_status.set_value("对方离线", "warnBadge")
+                    self.chat_view.security_status.set_value("对方离线，消息已存储", "warnBadge")
                 else:
-                    self.chat_view.security_status.set_value("加密与签名已通过", "okBadge")
+                    self.chat_view.security_status.set_value("消息已加密送达", "okBadge")
             else:
-                self.chat_view.add_message("安全回执：未知响应", "security")
+                self.chat_view.security_status.set_value("回执为空", "warnBadge")
         except Exception as exc:
             self.chat_view.add_message(f"安全提示：消息发送失败，{exc}", "security")
             self.chat_view.security_status.set_value("发送失败", "errorBadge")
@@ -229,8 +233,27 @@ class MainWindow(QMainWindow):
             self.chat_view.security_status.set_value("群聊同步正常", "okBadge")
         self._refresh_online_users()
         self._poll_thread = None
+
+    @staticmethod
+    def _is_ticket_expired_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "expired" in message and ("ticket" in message or "tgt" in message)
+
+    def _mark_reauth_required(self, reason: str) -> None:
+        self.chat_view.security_status.set_value("票据已过期，请重新认证", "errorBadge")
+        self.chat_view.heartbeat_status.set_value("已停止", "errorBadge")
+        self.chat_view.relogin_button.setEnabled(True)
+        self.chat_view.relogin_button.setObjectName("primaryButton")
+        self.chat_view.relogin_button.style().unpolish(self.chat_view.relogin_button)
+        self.chat_view.relogin_button.style().polish(self.chat_view.relogin_button)
+        self.chat_view.add_message(f"安全提示：Kerberos 票据已失效，请点击“重新认证”。{reason}", "security")
     
     def _on_poll_error(self, exc):
+        if self._is_ticket_expired_error(exc):
+            self._mark_reauth_required(str(exc))
+            self._poll_timer.stop()
+            self._poll_thread = None
+            return
         self.chat_view.security_status.set_value("轮询失败", "errorBadge")
         self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
         self._poll_timer.stop()
@@ -242,6 +265,10 @@ class MainWindow(QMainWindow):
         try:
             users = self._auth_client.fetch_online_users()
         except Exception as exc:
+            if self._is_ticket_expired_error(exc):
+                self._mark_reauth_required(str(exc))
+                self._poll_timer.stop()
+                return
             self.chat_view.security_status.set_value("用户列表异常", "errorBadge")
             self.chat_view.add_message(f"安全提示：刷新在线用户失败，{exc}", "security")
             return
@@ -258,6 +285,10 @@ class MainWindow(QMainWindow):
         try:
             messages = self._auth_client.poll_chat_messages(session["chat_type"], session["recipient"])
         except Exception as exc:
+            if self._is_ticket_expired_error(exc):
+                self._mark_reauth_required(str(exc))
+                self._poll_timer.stop()
+                return
             self.chat_view.security_status.set_value("轮询失败", "errorBadge")
             self.chat_view.add_message(f"安全提示：拉取会话消息失败，{exc}", "security")
             return
@@ -288,13 +319,10 @@ class MainWindow(QMainWindow):
                     
             self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp)
 
-    def _start_private_chat(self) -> None:
-        """Handle starting a private chat with a manually entered username."""
-        username, ok = QInputDialog.getText(self, "发起私聊", "请输入对方用户名：")
-        if not ok or not username.strip():
+    def _open_private_chat(self, username: str) -> None:
+        """Open a private chat with the selected contact."""
+        if not self._auth_client:
             return
-        
-        username = username.strip()
         if username == self._auth_client.username:
             QMessageBox.warning(self, "警告", "不能与自己发起私聊")
             return
@@ -314,6 +342,10 @@ class MainWindow(QMainWindow):
         try:
             messages = self._auth_client.poll_chat_messages("private", username)
         except Exception as exc:
+            if self._is_ticket_expired_error(exc):
+                self._mark_reauth_required(str(exc))
+                self._poll_timer.stop()
+                return
             self.chat_view.security_status.set_value("轮询失败", "errorBadge")
             self.chat_view.add_message(f"安全提示：拉取私聊消息失败，{exc}", "security")
             return
@@ -325,7 +357,7 @@ class MainWindow(QMainWindow):
         self.chat_view.set_current_session("group", "")
         
         self.chat_view.clear_messages()
-        self.chat_view.session_type_status.set_value("群聊", "okBadge")
+        self.chat_view.session_type_status.set_value("群聊大厅", "okBadge")
         self.chat_view.add_message("系统通知：已切换到群聊大厅", "system")
         if not self._auth_client:
             return
@@ -333,19 +365,26 @@ class MainWindow(QMainWindow):
         try:
             messages = self._auth_client.poll_chat_messages("group", "")
         except Exception as exc:
+            if self._is_ticket_expired_error(exc):
+                self._mark_reauth_required(str(exc))
+                self._poll_timer.stop()
+                return
             self.chat_view.security_status.set_value("轮询失败", "errorBadge")
             self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
             return
         self._display_chat_messages(messages, include_self=True)
 
     def _handle_relogin(self) -> None:
-        """Handle re-login request when service ticket expires."""
+        """Refresh Kerberos tickets and chat session keys."""
         if not self._auth_client or not self._auth_payload:
-            self.chat_view.add_message("系统提示：无法重新登录，请返回登录页", "security")
+            self.chat_view.add_message("系统提示：无法重新认证，请返回登录页", "security")
             return
         
         self.chat_view.add_message("系统提示：正在重新认证...", "system")
         self.chat_view.relogin_button.setEnabled(False)
+        self.chat_view.relogin_button.setObjectName("secondaryButton")
+        self.chat_view.relogin_button.style().unpolish(self.chat_view.relogin_button)
+        self.chat_view.relogin_button.style().polish(self.chat_view.relogin_button)
         
         try:
             self._auth_client.reset_session()
@@ -353,9 +392,38 @@ class MainWindow(QMainWindow):
             self._is_relogin = True
             self._stage_timer.start()
         except Exception as exc:
-            self.chat_view.add_message(f"安全提示：重新登录失败，{exc}", "security")
-            self.chat_view.security_status.set_value("重新登录失败", "errorBadge")
+            self.chat_view.add_message(f"安全提示：重新认证失败，{exc}", "security")
+            self.chat_view.security_status.set_value("重新认证失败", "errorBadge")
             self.chat_view.relogin_button.setEnabled(True)
+
+    def _mute_user(self, username: str) -> None:
+        """Mute a user from the admin contact menu."""
+        if not self._auth_client:
+            return
+        try:
+            result = self._auth_client.admin_mute_user(username, duration_seconds=600, reason="管理员客户端禁言")
+        except Exception as exc:
+            self.chat_view.add_message(f"安全提示：禁言 {username} 失败，{exc}", "security")
+            self.chat_view.security_status.set_value("禁言失败", "errorBadge")
+            return
+        expires_at = result.get("expires_at", 0)
+        self.chat_view.add_message(f"系统通知：已禁言 {username} 10 分钟，expires_at={expires_at}", "system")
+        self.chat_view.security_status.set_value("禁言规则已生效", "okBadge")
+        self._refresh_online_users()
+
+    def _unmute_user(self, username: str) -> None:
+        """Unmute a user from the admin contact menu."""
+        if not self._auth_client:
+            return
+        try:
+            self._auth_client.admin_unmute_user(username)
+        except Exception as exc:
+            self.chat_view.add_message(f"安全提示：解除 {username} 禁言失败，{exc}", "security")
+            self.chat_view.security_status.set_value("解除禁言失败", "errorBadge")
+            return
+        self.chat_view.add_message(f"系统通知：已解除 {username} 的禁言", "system")
+        self.chat_view.security_status.set_value("禁言已解除", "okBadge")
+        self._refresh_online_users()
 
     def _send_image(self) -> None:
         """Handle image send request."""
@@ -387,20 +455,45 @@ class MainWindow(QMainWindow):
             finished = pyqtSignal(dict)
             error = pyqtSignal(Exception)
             progress = pyqtSignal(int, str)
+            preview_ready = pyqtSignal(str, str)
             
-            def __init__(self, auth_client, file_path):
+            def __init__(self, auth_client, file_path, chat_type, recipient):
                 super().__init__()
                 self.auth_client = auth_client
                 self.file_path = file_path
+                self.chat_type = chat_type
+                self.recipient = recipient
             
             def run(self):
                 try:
                     def progress_callback(value, text=""):
                         self.progress.emit(value, text)
-                    result = self.auth_client.send_image(self.file_path, progress_callback)
+                    result = self.auth_client.send_image(
+                        self.file_path,
+                        progress_callback=progress_callback,
+                        chat_type=self.chat_type,
+                        recipient=self.recipient,
+                        preview_callback=self.preview_ready.emit,
+                    )
                     self.finished.emit(result)
                 except Exception as exc:
                     self.error.emit(exc)
+
+        def on_preview_ready(file_name, image_base64):
+            current = self.chat_view.current_session()
+            if current["chat_type"] != session["chat_type"] or current["recipient"] != session["recipient"]:
+                return
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.chat_view.add_message(
+                f"[图片] {file_name}（后台发送中）",
+                "self",
+                "",
+                image_base64,
+                file_name,
+                self._auth_client.username,
+                timestamp,
+            )
         
         def on_send_finished(result):
             try:
@@ -410,14 +503,14 @@ class MainWindow(QMainWindow):
                     self.chat_view.set_upload_progress(100, "上传完成！")
                     self.chat_view.add_message(f"图片发送成功：{result.get('file_name')}", "system")
                     self.chat_view.security_status.set_value("图片已发送", "okBadge")
-                    self._poll_chat_messages()
                 else:
                     self.chat_view.set_upload_progress(0, "上传失败")
                     self.chat_view.add_message(f"图片发送失败：{result.get('error', '未知错误')}", "security")
             finally:
                 self.chat_view.hide_upload_progress()
-                # Release thread reference
-                self._image_send_thread = None
+                self.chat_view.image_button.setEnabled(True)
+                if thread in self._image_send_threads:
+                    self._image_send_threads.remove(thread)
         
         def on_send_error(exc):
             try:
@@ -426,15 +519,23 @@ class MainWindow(QMainWindow):
                 self.chat_view.security_status.set_value("发送失败", "errorBadge")
             finally:
                 self.chat_view.hide_upload_progress()
-                # Release thread reference
-                self._image_send_thread = None
+                self.chat_view.image_button.setEnabled(True)
+                if thread in self._image_send_threads:
+                    self._image_send_threads.remove(thread)
         
         # Start the thread
         self.chat_view.set_upload_progress(30, "正在初始化...")
-        thread = ImageSendThread(self._auth_client, file_path)
+        self.chat_view.image_button.setEnabled(False)
+        session = self.chat_view.current_session()
+        thread = ImageSendThread(
+            self._auth_client,
+            file_path,
+            session["chat_type"],
+            session["recipient"],
+        )
         thread.finished.connect(on_send_finished)
         thread.error.connect(on_send_error)
         thread.progress.connect(self.chat_view.set_upload_progress)
-        # Keep reference to avoid garbage collection
-        self._image_send_thread = thread
+        thread.preview_ready.connect(on_preview_ready)
+        self._image_send_threads.append(thread)
         thread.start()

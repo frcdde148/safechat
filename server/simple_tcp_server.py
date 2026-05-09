@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import socket
 import threading
-from typing import Callable
+from typing import Any, Callable
 
 from common.protocol.message import Message
 from common.protocol.socket_io import recv_message, send_message
 
 
-Handler = Callable[[dict, tuple[str, int]], Message]
+Handler = Callable[[dict, tuple[str, int]], Message | dict[str, Any]]
 
 
 def serve(host: str, port: int, service_name: str, handler: Handler) -> None:

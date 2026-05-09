@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import uuid
 import json
+import time
 
 from common.config.settings import server_bind_address
+from common.protocol.admin_token import issue_admin_token, verify_admin_token
+from common.models.tickets import decrypt_authenticator, decrypt_ticket
 from server.as_server.core import AuthenticationServer
 from server.simple_tcp_server import serve
 
@@ -17,6 +20,9 @@ PROTOCOL_VERSION = "safechat-kerberos-v4-ext"
 
 def handle_message(message: dict, address: tuple[str, int]) -> dict:
     """Handle Client -> AS requests and return response dict."""
+    if message["type"].startswith("AS_ADMIN_"):
+        return _handle_admin_message(message, address)
+
     # Validate message type
     if message["type"] != "C_AS_REQ":
         return {
@@ -70,11 +76,14 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "request_id": str(uuid.uuid4()),
         "session_id": response.session_id,
     }
-    
+    return _envelope(message, "AS_C_REP", response_body)
+
+
+def _envelope(message: dict, response_type: str, body: dict) -> dict:
     return {
-        "type": "AS_C_REP",
+        "type": response_type,
         "seq": message["seq"],
-        "body": response_body,
+        "body": body,
         "sid": message.get("sid", ""),
         "v": 1,
         "ts": message.get("ts", 0),
@@ -85,52 +94,138 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     }
 
 
+def _admin_error(message: dict, error: str) -> dict:
+    return _envelope(message, "ERROR", {"error": error})
+
+
+def _require_admin(message: dict) -> tuple[bool, str]:
+    body = message.get("body", {})
+    token = body.get("admin_token", "")
+    payload = verify_admin_token(token)
+    if not payload:
+        return False, ""
+    username = str(payload.get("username", ""))
+    user = as_server.dao.get_user(username)
+    return bool(user and user.get("role") == "admin"), username
+
+
+def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
+    if message["type"] == "AS_ADMIN_TOKEN_REQ":
+        return _handle_admin_token_req(message, address)
+    ok, admin_user = _require_admin(message)
+    if not ok:
+        as_server.dao.add_audit_log("", admin_user or "unknown", address[0], "AS_ADMIN_DENIED")
+        return _admin_error(message, "admin permission required")
+    body = message.get("body", {})
+    action = message["type"]
+    dao = as_server.dao
+    try:
+        if action == "AS_ADMIN_LIST_USERS":
+            with dao._connect() as conn:
+                rows = conn.execute(
+                    "SELECT username, role, created_at FROM users ORDER BY username"
+                ).fetchall()
+                return _envelope(message, "AS_ADMIN_ACK", {"users": [dict(row) for row in rows]})
+        if action == "AS_ADMIN_SET_ROLE":
+            target = body.get("target_username", "")
+            role = body.get("role", "user")
+            if role not in {"user", "admin"}:
+                return _admin_error(message, "invalid role")
+            with dao._connect() as conn:
+                conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
+                conn.commit()
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_SET_ROLE", json.dumps({"target": target, "role": role}, ensure_ascii=False))
+            return _envelope(message, "AS_ADMIN_ACK", {"updated": target, "role": role})
+        if action == "AS_ADMIN_LIST_SESSIONS":
+            with dao._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT username, session_id, client_ip, tgt_issued_at, tgt_expires_at,
+                           service_ticket_issued_at, service_ticket_expires_at, last_seen, status
+                    FROM active_sessions
+                    ORDER BY id DESC
+                    LIMIT 300
+                    """
+                ).fetchall()
+                return _envelope(message, "AS_ADMIN_ACK", {"sessions": [dict(row) for row in rows]})
+        if action == "AS_ADMIN_INVALIDATE_USER":
+            target = body.get("target_username", "")
+            dao.invalidate_user_sessions(target)
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_INVALIDATE_USER", target)
+            return _envelope(message, "AS_ADMIN_ACK", {"target_username": target})
+        if action == "AS_ADMIN_BAN_IP":
+            ip = body.get("ip_address", "")
+            reason = body.get("reason", "")
+            ban_seconds = int(body.get("ban_seconds", 1800))
+            with dao._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ip_bans (ip_address, reason, ban_time, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(ip_address) DO UPDATE SET
+                        reason = excluded.reason,
+                        ban_time = excluded.ban_time,
+                        created_at = excluded.created_at
+                    """,
+                    (ip, reason, ban_seconds, int(time.time())),
+                )
+                conn.commit()
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_BAN_IP", json.dumps({"ip": ip, "seconds": ban_seconds}, ensure_ascii=False))
+            return _envelope(message, "AS_ADMIN_ACK", {"ip_address": ip})
+        if action == "AS_ADMIN_LIST_IP_BANS":
+            with dao._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ip_address, reason, ban_time, created_at FROM ip_bans ORDER BY id DESC LIMIT 200"
+                ).fetchall()
+                return _envelope(message, "AS_ADMIN_ACK", {"ip_bans": [dict(row) for row in rows]})
+        if action == "AS_ADMIN_AUDIT_QUERY":
+            action_filter = body.get("action_filter", "")
+            params = []
+            query = "SELECT id, timestamp, user_id, client_ip, action_type, content_enc, signature FROM audit_logs"
+            if action_filter:
+                query += " WHERE action_type LIKE ?"
+                params.append(f"%{action_filter}%")
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(int(body.get("limit", 300)))
+            with dao._connect() as conn:
+                rows = conn.execute(query, params).fetchall()
+                return _envelope(message, "AS_ADMIN_ACK", {"audit_logs": [dict(row) for row in rows]})
+    except Exception as exc:
+        return _admin_error(message, str(exc))
+    return _admin_error(message, f"unknown AS admin action: {action}")
+
+
+def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
+    """Issue an admin token after validating the existing Kerberos TGT."""
+    dao = as_server.dao
+    try:
+        tgs_service = dao.get_service(as_server.TGS_SERVICE)
+        if not tgs_service:
+            return _admin_error(message, "TGS service is not configured")
+        tgt = decrypt_ticket(message["body"]["ticket_tgt"], tgs_service["service_key"])
+        if not tgt.is_valid():
+            return _admin_error(message, f"TGT is expired: {tgt.validity_debug()}")
+        authenticator = decrypt_authenticator(message["body"]["authenticator"], tgt.session_key)
+        if authenticator.client_id != tgt.client_id:
+            return _admin_error(message, "authenticator client does not match TGT")
+        if authenticator.client_addr and authenticator.client_addr != tgt.client_addr:
+            return _admin_error(message, "authenticator does not match TGT client address")
+        user = dao.get_user(tgt.client_id)
+        if not user or user.get("role") != "admin":
+            dao.add_audit_log("", tgt.client_id, address[0], "AS_ADMIN_TOKEN_DENIED")
+            return _admin_error(message, "admin permission required")
+        token = issue_admin_token(tgt.client_id)
+        dao.add_audit_log("", tgt.client_id, address[0], "AS_ADMIN_TOKEN_OK")
+        return _envelope(message, "AS_ADMIN_ACK", {"admin_token": token, "expires_in": 3600})
+    except Exception as exc:
+        return _admin_error(message, str(exc))
+
+
 def main() -> None:
     """Start the authentication server."""
     host, port = server_bind_address("as_server")
     print(f"Starting AS server on {host}:{port}")
-    
-    # Custom serve function that handles dict messages
-    import socket
-    import struct
-    
-    def custom_serve(host: str, port: int, server_name: str, handler):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
-            sock.listen(5)
-            print(f"{server_name} listening on {host}:{port}")
-            
-            while True:
-                conn, addr = sock.accept()
-                with conn:
-                    try:
-                        # Read length
-                        length_data = conn.recv(4)
-                        if not length_data:
-                            continue
-                        length = struct.unpack('!I', length_data)[0]
-                        
-                        # Read message
-                        data = b''
-                        while len(data) < length:
-                            chunk = conn.recv(min(length - len(data), 4096))
-                            if not chunk:
-                                break
-                            data += chunk
-                        
-                        # Parse and handle
-                        message = json.loads(data.decode('utf-8'))
-                        response = handler(message, addr)
-                        
-                        # Send response
-                        response_json = json.dumps(response)
-                        conn.sendall(struct.pack('!I', len(response_json)))
-                        conn.sendall(response_json.encode('utf-8'))
-                    except Exception as e:
-                        print(f"Error handling connection: {e}")
-    
-    custom_serve(host, port, "AS Server", handle_message)
+    serve(host, port, "AS Server", handle_message)
 
 
 if __name__ == "__main__":
