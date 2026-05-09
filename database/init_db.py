@@ -21,6 +21,7 @@ VALID_ROLES = ("as", "tgs", "chat", "all")
 
 
 SEED_USERS = (
+    ("admin", "admin123", "admin"),
     ("alice", "alice123", "user"),
     ("bob", "bob123", "user"),
     ("carol", "carol123", "user"),
@@ -119,6 +120,20 @@ def create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_key, id);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_sender ON chat_messages(sender);
         CREATE INDEX IF NOT EXISTS idx_chat_messages_recipient ON chat_messages(recipient);
+
+        CREATE TABLE IF NOT EXISTS mute_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL,
+            target_value TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'global',
+            reason TEXT DEFAULT '',
+            muted_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX IF NOT EXISTS idx_mute_rules_target ON mute_rules(target_type, target_value, status);
+        CREATE INDEX IF NOT EXISTS idx_mute_rules_expires ON mute_rules(expires_at);
         """
     )
 
@@ -136,6 +151,7 @@ def seed_users(conn: sqlite3.Connection) -> None:
             """,
             (username, hash_password(password, salt), password, salt, role, now),
         )
+        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
 
 
 def seed_services(conn: sqlite3.Connection, role: str = "all") -> None:
@@ -168,7 +184,7 @@ def init_database(path: Path, role: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         create_schema(conn)
-        if role in {"all", "as"}:
+        if role in {"all", "as", "chat"}:
             seed_users(conn)
         seed_services(conn, role)
         conn.commit()

@@ -215,6 +215,10 @@ class AuthClient:
         )
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)
+        message_id = int(response["body"].get("message_id", 0))
+        if message_id:
+            session_key = self._session_key(chat_type, recipient)
+            self.last_message_ids[session_key] = max(self.last_message_ids.get(session_key, 0), message_id)
         ack = response["body"].get("ack_cipher")
         plaintext_ack = ""
         if ack:
@@ -223,9 +227,17 @@ class AuthClient:
             "sent": message.to_dict(),
             "received": response,
             "ack": plaintext_ack,
+            "message_id": message_id,
         }
 
-    def send_image(self, file_path: str, progress_callback=None) -> dict[str, Any]:
+    def send_image(
+        self,
+        file_path: str,
+        progress_callback=None,
+        chat_type: str = "group",
+        recipient: str = "",
+        preview_callback=None,
+    ) -> dict[str, Any]:
         """Send an encrypted image to chat server."""
         import os
         from base64 import b64encode
@@ -248,6 +260,8 @@ class AuthClient:
         if progress_callback:
             progress_callback(40, "正在编码图片...")
         image_base64 = b64encode(image_data).decode()
+        if preview_callback:
+            preview_callback(output_name, image_base64)
         
         if progress_callback:
             progress_callback(50, "正在加密数据...")
@@ -262,8 +276,8 @@ class AuthClient:
             "file_name": output_name,
             "file_size": len(image_data),
             "original_size": original_size,
-            "chat_type": "group",
-            "recipient": "",
+            "chat_type": chat_type,
+            "recipient": recipient,
         }
         digest, signature = sign_body(body, self.private_key_pem)
         message = Message(
@@ -280,8 +294,22 @@ class AuthClient:
         if progress_callback:
             progress_callback(75, "等待服务器响应...")
         self._raise_on_error(response)
-        
-        return {"success": True, "file_name": output_name}
+        message_id = int(response["body"].get("message_id", 0))
+        if message_id:
+            session_key = self._session_key(chat_type, recipient)
+            self.last_message_ids[session_key] = max(self.last_message_ids.get(session_key, 0), message_id)
+
+        ack = response["body"].get("ack_cipher")
+        plaintext_ack = ""
+        if ack:
+            plaintext_ack = decrypt_text(ack["ciphertext"], ack["iv"], self.session_key_c_v)
+
+        return {
+            "success": True,
+            "file_name": output_name,
+            "message_id": message_id,
+            "ack": plaintext_ack,
+        }
 
     @staticmethod
     def _prepare_image_payload(file_path: str) -> tuple[bytes, str, int]:
@@ -402,6 +430,55 @@ class AuthClient:
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)
         return response["body"].get("users", [])
+
+    def admin_mute_user(self, target_username: str, duration_seconds: int = 600, reason: str = "admin mute") -> dict[str, Any]:
+        """Ask ChatServer to mute one user. Server enforces admin permission."""
+        return self._send_admin_action(
+            "ADMIN_MUTE_USER",
+            {
+                "target_username": target_username,
+                "duration_seconds": duration_seconds,
+                "reason": reason,
+            },
+        )
+
+    def admin_unmute_user(self, target_username: str) -> dict[str, Any]:
+        """Ask ChatServer to revoke active mute rules for one user."""
+        return self._send_admin_action(
+            "ADMIN_UNMUTE_USER",
+            {
+                "target_username": target_username,
+            },
+        )
+
+    def admin_kick_user(self, target_username: str) -> dict[str, Any]:
+        """Ask ChatServer to remove one user from the online table."""
+        return self._send_admin_action(
+            "ADMIN_KICK_USER",
+            {
+                "target_username": target_username,
+            },
+        )
+
+    def _send_admin_action(self, action_type: str, body_fields: dict[str, Any]) -> dict[str, Any]:
+        if not self.service_ticket or not self.session_key_c_v:
+            raise ValueError("chat session is not authenticated")
+        body = {
+            "service_ticket": self.service_ticket,
+            **body_fields,
+        }
+        digest, signature = sign_body(body, self.private_key_pem)
+        message = Message(
+            type=action_type,
+            seq=self._next_seq(),
+            body=body,
+            hmac=digest,
+            sig=signature,
+            pubkey=self.public_key_pem,
+        )
+        response = request(self.chat_host, self.chat_port, message)
+        self._raise_on_error(response)
+        return response["body"]
 
     @staticmethod
     def _raise_on_error(response: dict[str, Any]) -> None:

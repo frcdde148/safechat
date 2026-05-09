@@ -7,12 +7,12 @@ import base64
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -58,7 +58,7 @@ class MessageBubble(QFrame):
         
         # Username label
         self.username_label = QLabel(username)
-        self.username_label.setStyleSheet("font-size: 12px; color: #6b7280;")
+        self.username_label.setStyleSheet("font-size: 24px; color: #374151; font-weight: 600;")
         
         # Timestamp label
         self.timestamp_label = QLabel(self.timestamp)
@@ -295,29 +295,32 @@ class ChatView(QWidget):
 
     message_send_requested = pyqtSignal(str)
     session_changed = pyqtSignal()
-    start_private_chat_requested = pyqtSignal()
     return_to_group_chat_requested = pyqtSignal()
     relogin_requested = pyqtSignal()
     image_send_requested = pyqtSignal()
+    private_chat_requested = pyqtSignal(str)
+    mute_user_requested = pyqtSignal(str)
+    unmute_user_requested = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.current_user_label = QLabel("alice")
         self.current_user_label.setObjectName("okBadge")
         self.user_list = QListWidget()
-        self.group_chat_button = QPushButton("群聊会话入口")
+        self.group_chat_button = QPushButton("进入群聊大厅")
         self.message_area = QVBoxLayout()
         self.message_input = QTextEdit()
         self.send_button = QPushButton("发送")
         self.toggle_cipher_button = QPushButton("显示密文")
         self.show_ciphertext = False
         self.message_bubbles: list[MessageBubble] = []
+        self.is_admin_user = False
         
         # Track current session
         self.current_chat_type = "group"
         self.current_recipient = ""
 
-        self.session_type_status = StatusLine("会话类型", "群聊", "okBadge")
+        self.session_type_status = StatusLine("会话类型", "群聊大厅", "okBadge")
         self.server_status = StatusLine("连接服务器", "127.0.0.1:9000", "okBadge")
         self.auth_status = StatusLine("认证状态", "认证通过", "okBadge")
         self.key_status = StatusLine("会话密钥", "Kc,v 已建立", "okBadge")
@@ -328,10 +331,12 @@ class ChatView(QWidget):
         self._build_ui()
         self._seed_demo_content()
         self._refresh_cipher_toggle_ui()
-        self.start_private_button.clicked.connect(self.start_private_chat_requested.emit)
         self.group_chat_button.clicked.connect(self.return_to_group_chat_requested.emit)
         self.relogin_button.clicked.connect(self._on_relogin_clicked)
         self.image_button.clicked.connect(self.image_send_requested.emit)
+        self.user_list.itemDoubleClicked.connect(self._emit_private_chat_from_contact)
+        self.user_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.user_list.customContextMenuRequested.connect(self._show_contact_menu)
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -357,15 +362,12 @@ class ChatView(QWidget):
 
         layout.addWidget(self.group_chat_button)
 
-        layout.addWidget(QLabel("在线用户"))
+        layout.addWidget(QLabel("通讯录"))
         layout.addWidget(self.user_list, 1)
 
-        self.start_private_button = QPushButton("发起私聊")
-        self.start_private_button.setObjectName("secondaryButton")
-        layout.addWidget(self.start_private_button)
-
-        self.relogin_button = QPushButton("重新登录")
+        self.relogin_button = QPushButton("重新认证")
         self.relogin_button.setObjectName("secondaryButton")
+        self.relogin_button.setToolTip("重新执行 Kerberos 六步认证，刷新 TGT、服务票据和会话密钥")
         layout.addWidget(self.relogin_button)
         return panel
 
@@ -376,9 +378,11 @@ class ChatView(QWidget):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        title = QLabel("消息")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
+        self.chat_title_label = QLabel("群聊大厅")
+        self.chat_title_label.setObjectName("sectionTitle")
+        self.chat_title_label.setAlignment(Qt.AlignCenter)
+        self.chat_title_label.setStyleSheet("font-size: 34px; font-weight: 700; color: #111827;")
+        layout.addWidget(self.chat_title_label)
 
         scroll_content = QWidget()
         self.message_area.setContentsMargins(0, 0, 0, 0)
@@ -505,26 +509,66 @@ class ChatView(QWidget):
         return {
             "chat_type": "group",
             "recipient": "",
-            "title": "群聊",
+            "title": "群聊大厅",
         }
     
     def set_current_session(self, chat_type: str, recipient: str) -> None:
         """Set current session."""
         self.current_chat_type = chat_type
         self.current_recipient = recipient
+        self.chat_title_label.setText(f"私聊 {recipient}" if chat_type == "private" and recipient else "群聊大厅")
 
     def set_online_users(self, users: list[dict]) -> None:
         """Replace the left-side online user list with server state."""
         self.user_list.clear()
+        self.is_admin_user = False
         current_user = self.current_user_label.text()
         for user in users:
             username = user.get("username", "")
-            status = user.get("status", "在线")
+            if not username:
+                continue
+            status = user.get("status", "离线")
+            role = user.get("role", "user")
+            muted = bool(user.get("muted", False))
             client_ip = user.get("client_ip", "")
             suffix = f"    {status}"
+            if role == "admin":
+                suffix = f"{suffix}    管理员"
+            if muted:
+                suffix = f"{suffix}    已禁言"
             if client_ip:
                 suffix = f"{suffix}    {client_ip}"
-            self.user_list.addItem(QListWidgetItem(f"{username}{suffix}"))
+            item = QListWidgetItem(f"{username}{suffix}")
+            item.setData(Qt.UserRole, username)
+            item.setData(Qt.UserRole + 1, role)
+            item.setData(Qt.UserRole + 2, muted)
+            if username == current_user:
+                self.is_admin_user = role == "admin"
+                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+            self.user_list.addItem(item)
+
+    def _emit_private_chat_from_contact(self, item: QListWidgetItem) -> None:
+        username = item.data(Qt.UserRole) or item.text().split()[0]
+        if username and username != self.current_user_label.text():
+            self.private_chat_requested.emit(username)
+
+    def _show_contact_menu(self, position) -> None:
+        item = self.user_list.itemAt(position)
+        if not item or not self.is_admin_user:
+            return
+        username = item.data(Qt.UserRole) or item.text().split()[0]
+        if not username or username == self.current_user_label.text():
+            return
+        muted = bool(item.data(Qt.UserRole + 2))
+        menu = QMenu(self)
+        mute_action = menu.addAction("禁言 10 分钟")
+        unmute_action = menu.addAction("解除禁言")
+        unmute_action.setEnabled(muted)
+        action = menu.exec_(self.user_list.mapToGlobal(position))
+        if action == mute_action:
+            self.mute_user_requested.emit(username)
+        elif action == unmute_action:
+            self.unmute_user_requested.emit(username)
 
     def _emit_message_send_requested(self) -> None:
         text = self.message_input.toPlainText().strip()

@@ -53,10 +53,16 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
         return _handle_chat_poll(message, address)
     if message["type"] == "USER_LIST":
         return _handle_user_list(message, address)
+    if message["type"] == "ADMIN_MUTE_USER":
+        return _handle_admin_mute_user(message, address)
+    if message["type"] == "ADMIN_UNMUTE_USER":
+        return _handle_admin_unmute_user(message, address)
+    if message["type"] == "ADMIN_KICK_USER":
+        return _handle_admin_kick_user(message, address)
     return Message(
         type="ERROR",
         seq=message["seq"],
-        body={"error": "ChatServer only accepts C_V_REQ, CHAT_SEND, IMAGE_SEND, CHAT_POLL or USER_LIST"},
+        body={"error": "ChatServer only accepts C_V_REQ, CHAT_SEND, IMAGE_SEND, CHAT_POLL, USER_LIST or ADMIN_*"},
     )
 
 
@@ -127,6 +133,10 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     if not _verify_signed_message_for_ticket(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "CHAT_SIGN_FAILED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "CHAT_SEND signature verification failed"})
+    mute_error = _mute_error(ticket.client_id)
+    if mute_error:
+        dao.add_audit_log("", ticket.client_id, address[0], "CHAT_SEND_MUTED", content_enc=mute_error)
+        return Message(type="ERROR", seq=message["seq"], body={"error": mute_error})
 
     cipher = message["body"]["message_cipher"]
     plaintext = decrypt_text(cipher["ciphertext"], cipher["iv"], ticket.session_key)
@@ -209,6 +219,10 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
             return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
         
         _update_user_last_seen(ticket.client_id)
+        mute_error = _mute_error(ticket.client_id)
+        if mute_error:
+            dao.add_audit_log("", ticket.client_id, address[0], "IMAGE_SEND_MUTED", content_enc=mute_error)
+            return Message(type="ERROR", seq=message["seq"], body={"error": mute_error})
         
         # Get image data from message
         image_cipher = message["body"]["image_cipher"]
@@ -271,6 +285,25 @@ def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
     )
 
 
+def _verify_admin_request(message: dict, ticket) -> bool:
+    """Verify request signature and require the sender to have admin role."""
+    if not _verify_signed_message_for_ticket(message, ticket):
+        return False
+    user = dao.get_user(ticket.client_id)
+    return bool(user and user.get("role") == "admin")
+
+
+def _mute_error(username: str) -> str:
+    """Return an error string when a user is currently muted."""
+    rule = dao.get_active_mute("user", username)
+    if not rule:
+        return ""
+    return (
+        f"user {username} is muted until {rule['expires_at']}; "
+        f"reason: {rule.get('reason', '')}"
+    )
+
+
 def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     """Return encrypted group-chat messages newer than last_seen_id."""
     ticket = _decrypt_valid_service_ticket(message)
@@ -310,10 +343,10 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
-    """Return the current online user list."""
+    """Return the full contact list with online/offline state."""
     ticket = _decrypt_valid_service_ticket(message)
     _update_user_last_seen(ticket.client_id)
-    users = _current_online_users()
+    users = _current_contact_users()
     dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST", content_enc=str(len(users)))
     return Message(
         type="USER_LIST",
@@ -321,6 +354,119 @@ def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
         body={
             "users": users,
             "count": len(users),
+        },
+    )
+
+
+def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
+    """Mute one user after verifying the operator is an administrator."""
+    ticket = _decrypt_valid_service_ticket(message)
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_MUTE_DENIED")
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+
+    target = message["body"].get("target_username", "").strip()
+    duration_seconds = int(message["body"].get("duration_seconds", 600))
+    reason = message["body"].get("reason", "admin mute")
+    if not target:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "target_username is required"})
+    if target == ticket.client_id:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "administrator cannot mute self"})
+    if not dao.get_user(target):
+        return Message(type="ERROR", seq=message["seq"], body={"error": f"user not found: {target}"})
+
+    duration_seconds = max(60, min(duration_seconds, 24 * 60 * 60))
+    expires_at = int(time.time() * 1000) + duration_seconds * 1000
+    rule_id = dao.add_mute_rule(
+        target_type="user",
+        target_value=target,
+        muted_by=ticket.client_id,
+        expires_at=expires_at,
+        reason=reason,
+    )
+    payload = {"target": target, "expires_at": expires_at, "reason": reason, "rule_id": rule_id}
+    dao.add_audit_log(
+        "",
+        ticket.client_id,
+        address[0],
+        "ADMIN_MUTE_USER",
+        content_enc=json.dumps(payload, ensure_ascii=False),
+    )
+    return Message(
+        type="ADMIN_MUTE_ACK",
+        seq=message["seq"],
+        body={
+            "target_username": target,
+            "expires_at": expires_at,
+            "rule_id": rule_id,
+            "ack": f"{target} muted until {expires_at}",
+        },
+    )
+
+
+def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Message:
+    """Revoke active user mute rules after administrator verification."""
+    ticket = _decrypt_valid_service_ticket(message)
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_UNMUTE_DENIED")
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+
+    target = message["body"].get("target_username", "").strip()
+    if not target:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "target_username is required"})
+    affected = dao.revoke_mute_rule("user", target)
+    payload = {"target": target, "affected": affected}
+    dao.add_audit_log(
+        "",
+        ticket.client_id,
+        address[0],
+        "ADMIN_UNMUTE_USER",
+        content_enc=json.dumps(payload, ensure_ascii=False),
+    )
+    return Message(
+        type="ADMIN_UNMUTE_ACK",
+        seq=message["seq"],
+        body={
+            "target_username": target,
+            "affected": affected,
+            "ack": f"{target} unmuted",
+        },
+    )
+
+
+def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
+    """Remove one user from ChatServer's in-memory online table."""
+    ticket = _decrypt_valid_service_ticket(message)
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_KICK_DENIED")
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+
+    target = message["body"].get("target_username", "").strip()
+    if not target:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "target_username is required"})
+    if target == ticket.client_id:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "administrator cannot kick self"})
+
+    with online_lock:
+        existed = target in online_users
+        online_users.pop(target, None)
+    dao.add_audit_log(
+        "",
+        ticket.client_id,
+        address[0],
+        "ADMIN_KICK_USER",
+        content_enc=json.dumps({"target": target, "was_online": existed}, ensure_ascii=False),
+    )
+    return Message(
+        type="ADMIN_KICK_ACK",
+        seq=message["seq"],
+        body={
+            "target_username": target,
+            "was_online": existed,
+            "ack": f"{target} kicked",
         },
     )
 
@@ -390,6 +536,33 @@ def _current_online_users() -> list[dict]:
         for username in expired:
             del online_users[username]
         return sorted(online_users.values(), key=lambda item: item["username"])
+
+
+def _current_contact_users() -> list[dict]:
+    """Merge the persisted user directory with current ChatServer online state."""
+    online = {item["username"]: item for item in _current_online_users()}
+    contacts = []
+    for user in dao.list_users():
+        username = user["username"]
+        if username in online:
+            contact = dict(online[username])
+        else:
+            contact = {
+                "username": username,
+                "session_id": "",
+                "client_ip": "",
+                "last_seen": 0,
+                "status": "离线",
+            }
+        contact["role"] = user.get("role", "user")
+        mute_rule = dao.get_active_mute("user", username)
+        contact["muted"] = bool(mute_rule)
+        contact["muted_until"] = mute_rule["expires_at"] if mute_rule else 0
+        contacts.append(contact)
+    for username, item in online.items():
+        if not any(contact["username"] == username for contact in contacts):
+            contacts.append(item)
+    return sorted(contacts, key=lambda item: item["username"])
 
 
 def main() -> None:
