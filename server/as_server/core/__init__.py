@@ -83,8 +83,11 @@ class AuthenticationServer:
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "User not found")
             return ASResponse(success=False, error="invalid username or password")
         
-        existing_session = self.dao.get_active_session(username)
-        if existing_session:
+        is_admin_console = message_body.get("client_type") == "admin_console" and user.get("role") == "admin"
+
+        session_client_type = "admin_console" if is_admin_console else "client"
+        existing_session = self.dao.get_active_session(username, session_client_type)
+        if existing_session and not is_admin_console:
             existing_ip = existing_session["client_ip"]
             if existing_ip != client_addr:
                 self._log_audit("", username, client_addr, "LOGIN_DENIED_DUPLICATE", 
@@ -106,7 +109,15 @@ class AuthenticationServer:
         encrypted_session_key = encrypt_text(session_key, client_key)
         
         session_id = secrets.token_hex(32)
-        self.dao.create_session(username, session_id, client_addr, tgt.issued_at, tgt.expires_at)
+        self.dao.create_session(
+            username,
+            session_id,
+            client_addr,
+            tgt.issued_at,
+            tgt.expires_at,
+            invalidate_existing=not is_admin_console,
+            client_type=session_client_type,
+        )
         
         self._log_audit(session_id, username, client_addr, "LOGIN_AS_OK", 
                         f"User {username} authenticated, TGT issued")

@@ -20,6 +20,7 @@ class AuthClient:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.username = payload["username"]
         self.password = payload["password"]
+        self.client_type = payload.get("client_type", "client")
         self.as_host, self.as_port = payload["as"]
         self.tgs_host = ""
         self.tgs_port = 0
@@ -71,6 +72,7 @@ class AuthClient:
         body = {
             "username": self.username,
             "tgs_id": "tgs_server",
+            "client_type": self.client_type,
         }
         message = Message(
             type="C_AS_REQ",
@@ -510,6 +512,15 @@ class AuthClient:
             {
                 "target_username": target_username,
                 "role": role,
+            },
+        )
+
+    def chat_admin_delete_user(self, target_username: str) -> dict[str, Any]:
+        """Delete ChatServer-local user copy through ChatServer admin API."""
+        return self._send_admin_action(
+            "CHAT_ADMIN_DELETE_USER",
+            {
+                "target_username": target_username,
             },
         )
 

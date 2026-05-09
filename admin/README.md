@@ -1,41 +1,43 @@
-# SafeChat Admin Console
+# SafeChat 管理端
 
-Run the standalone administrator console:
+启动：
 
 ```powershell
 python -m admin.main
 ```
 
-Default administrator account after database initialization:
+默认管理员账号：
 
 ```text
 admin / admin123
 ```
 
-The console uses Kerberos authentication through AS/TGS/ChatServer, then calls
-server-side admin APIs. It no longer opens SQLite database files directly.
+管理端先完成 Kerberos 登录，再调用服务器管理接口。管理端不直接打开 SQLite 数据库。
 
-Implemented console pages:
+## 功能
 
-- `Online / Mute`: online contacts, mute/unmute, and kick online users through ChatServer.
-- `Users / Roles`: update user/admin roles through AS and ChatServer admin APIs.
-- `Tickets / Sessions`: inspect AS active sessions and invalidate sessions through AS.
-- `IP Bans`: create temporary IP bans through AS.
-- `Chat Records`: query traceable chat history through ChatServer.
-- `Audit Logs`: query and export AS/TGS/ChatServer audit logs through each server.
-- `Service Status`: check configured service endpoints and database paths.
+- 查看通讯录、在线状态、禁言状态。
+- 创建用户。
+- 删除用户。
+- 重置用户密码。
+- 设置普通用户/管理员角色。
+- 查看和使 AS 会话失效。
+- IP 封禁。
+- 查询聊天记录。
+- 查询并导出 AS/TGS/ChatServer 审计日志。
+- 检查服务连通状态。
 
-Operational note: the console uses the administrator password only for the
-normal Kerberos login. It then sends `AS_ADMIN_TOKEN_REQ` with the existing
-TGT and authenticator. AS returns a signed, time-limited `admin_token`; later
-AS/TGS admin requests carry only that token. ChatServer admin APIs continue to
-verify the Kerberos service ticket, request signature, and admin role.
+## 账号规则
 
-Before using it on an existing deployment, initialize or migrate the AS and
-ChatServer databases so the `admin` user and `mute_rules` table exist:
+- 只能由管理员创建用户。
+- 用户名创建后不可修改。
+- 不能修改当前管理员自己的角色。
+- 不能删除当前管理员自己。
+- 不能降级或删除最后一个管理员。
+- 重置密码会使用户现有会话失效，并撤销 ChatServer 聊天会话。
+- 删除用户会删除 AS 账号和 ChatServer 通讯录副本，但保留聊天记录和审计日志。
 
-```powershell
-python -m database.init_db --role as
-python -m database.init_db --role tgs
-python -m database.init_db --role chat
-```
+## 鉴权
+
+- AS/TGS 管理接口使用 AS 签发的短期 `admin_token`。
+- ChatServer 管理接口校验 Service Ticket、请求签名和本地管理员角色副本。

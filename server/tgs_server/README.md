@@ -1,9 +1,18 @@
 # TGS Server
 
-票据授权服务器负责：
+启动：
 
-- 校验 `TGT`
-- 校验客户端 `Authenticator`
-- 生成 `Client-Service Session Key`
-- 签发聊天室服务票据 `Service Ticket`
-- 记录票据签发、异常票据和非法请求审计日志
+```powershell
+python -m server.tgs_server.main
+```
+
+TGS 负责：
+
+- 校验 AS 签发的 `TGT`。
+- 校验客户端 Authenticator。
+- 生成 `Kc,v`。
+- 签发访问 ChatServer 的 Service Ticket。
+- 返回 ChatServer 对外地址。
+- 记录 TGS 审计日志。
+
+TGS 管理接口只验证 AS 签发的短期 `admin_token`。

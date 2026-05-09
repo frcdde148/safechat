@@ -1,15 +1,19 @@
-# Client
+# SafeChat 客户端
+
+启动：
+
+```powershell
+python -m client.main
+```
 
 客户端负责：
 
-- 用户登录与本地口令派生
-- 与 `AS`、`TGS`、`ChatServer` 的 TCP 通信
-- GUI 展示认证流程、票据和报文细节
-- 使用 `Client-Service Session Key` 加密聊天消息
-- 对关键聊天和文件操作生成 RSA-1024 数字签名
+- 输入用户名、密码和 AS 地址。
+- 展示 Kerberos V4 六步认证过程和报文细节。
+- 进入群聊大厅。
+- 双击通讯录用户进入私聊。
+- 发送文本和图片。
+- 查看聊天历史。
+- 展示安全回执、票据状态和重新认证入口。
 
-客户端入口：
-
-```bash
-python3 -m client.main
-```
+认证完成后，客户端只保存本次会话需要的 TGT、Service Ticket、`Kc,tgs` 和 `Kc,v`。如果票据过期或会话被管理员撤销，客户端会提示重新认证。

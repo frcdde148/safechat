@@ -1,4 +1,4 @@
-"""PyQt admin console for SafeChat operations and audit review."""
+"""PyQt 管理端界面。"""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class AdminConsole(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("SafeChat Admin Console")
+        self.setWindowTitle("SafeChat 管理端")
         self.resize(1500, 930)
         self._settings = load_settings()
         self._auth_client: AuthClient | None = None
@@ -54,13 +54,13 @@ class AdminConsole(QMainWindow):
         layout.addWidget(self._build_login_panel())
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_overview_tab(), "Online / Mute")
-        self.tabs.addTab(self._build_user_admin_tab(), "Users / Roles")
-        self.tabs.addTab(self._build_sessions_tab(), "Tickets / Sessions")
-        self.tabs.addTab(self._build_ip_ban_tab(), "IP Bans")
-        self.tabs.addTab(self._build_chat_records_tab(), "Chat Records")
-        self.tabs.addTab(self._build_audit_tab(), "Audit Logs")
-        self.tabs.addTab(self._build_status_tab(), "Service Status")
+        self.tabs.addTab(self._build_overview_tab(), "在线与禁言")
+        self.tabs.addTab(self._build_user_admin_tab(), "用户与角色")
+        self.tabs.addTab(self._build_sessions_tab(), "票据与会话")
+        self.tabs.addTab(self._build_ip_ban_tab(), "IP 封禁")
+        self.tabs.addTab(self._build_chat_records_tab(), "聊天记录")
+        self.tabs.addTab(self._build_audit_tab(), "审计日志")
+        self.tabs.addTab(self._build_status_tab(), "服务状态")
         layout.addWidget(self.tabs, 1)
 
         self.setCentralWidget(root)
@@ -68,27 +68,29 @@ class AdminConsole(QMainWindow):
         self.refresh_status()
 
     def _build_login_panel(self) -> QGroupBox:
-        group = QGroupBox("Admin Kerberos Authentication")
+        group = QGroupBox("管理员 Kerberos 认证")
         layout = QGridLayout(group)
         as_host, as_port = service_address("as_server")
-        self.username_input = QLineEdit("admin")
-        self.password_input = QLineEdit("admin123")
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("管理员用户名")
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("管理员密码")
         self.password_input.setEchoMode(QLineEdit.Password)
         self.as_host_input = QLineEdit(as_host)
         self.as_port_input = QSpinBox()
         self.as_port_input.setRange(1, 65535)
         self.as_port_input.setValue(as_port)
-        self.login_button = QPushButton("Authenticate")
+        self.login_button = QPushButton("登录认证")
         self.login_button.clicked.connect(self.login_admin)
-        self.login_status = QLabel("Not authenticated")
+        self.login_status = QLabel("未认证")
 
-        layout.addWidget(QLabel("Username"), 0, 0)
+        layout.addWidget(QLabel("用户名"), 0, 0)
         layout.addWidget(self.username_input, 0, 1)
-        layout.addWidget(QLabel("Password"), 0, 2)
+        layout.addWidget(QLabel("密码"), 0, 2)
         layout.addWidget(self.password_input, 0, 3)
-        layout.addWidget(QLabel("AS Host"), 1, 0)
+        layout.addWidget(QLabel("AS 主机"), 1, 0)
         layout.addWidget(self.as_host_input, 1, 1)
-        layout.addWidget(QLabel("AS Port"), 1, 2)
+        layout.addWidget(QLabel("AS 端口"), 1, 2)
         layout.addWidget(self.as_port_input, 1, 3)
         layout.addWidget(self.login_button, 0, 4, 2, 1)
         layout.addWidget(self.login_status, 0, 5, 2, 1)
@@ -98,22 +100,22 @@ class AdminConsole(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         actions = QHBoxLayout()
-        self.refresh_users_button = QPushButton("Refresh Contacts")
+        self.refresh_users_button = QPushButton("刷新通讯录")
         self.refresh_users_button.clicked.connect(self.refresh_users)
-        self.mute_button = QPushButton("Mute Selected")
+        self.mute_button = QPushButton("禁言选中用户")
         self.mute_button.clicked.connect(self.mute_selected_user)
-        self.unmute_button = QPushButton("Unmute Selected")
+        self.unmute_button = QPushButton("解除禁言")
         self.unmute_button.clicked.connect(self.unmute_selected_user)
-        self.kick_button = QPushButton("Kick Selected Online User")
+        self.kick_button = QPushButton("踢出在线用户")
         self.kick_button.clicked.connect(self.kick_selected_user)
         self.duration_input = QSpinBox()
         self.duration_input.setRange(1, 1440)
         self.duration_input.setValue(10)
-        self.reason_input = QLineEdit("Muted by admin console")
+        self.reason_input = QLineEdit("管理员禁言")
         actions.addWidget(self.refresh_users_button)
-        actions.addWidget(QLabel("Mute minutes"))
+        actions.addWidget(QLabel("禁言分钟"))
         actions.addWidget(self.duration_input)
-        actions.addWidget(QLabel("Reason"))
+        actions.addWidget(QLabel("原因"))
         actions.addWidget(self.reason_input, 1)
         actions.addWidget(self.mute_button)
         actions.addWidget(self.unmute_button)
@@ -122,7 +124,7 @@ class AdminConsole(QMainWindow):
 
         self.users_table = QTableWidget(0, 8)
         self.users_table.setHorizontalHeaderLabels(
-            ["User", "Role", "Status", "IP", "Last Seen", "Muted", "Muted Until", "Session"]
+            ["用户", "角色", "状态", "IP", "最后在线", "是否禁言", "禁言到期", "会话"]
         )
         self._stretch_table(self.users_table)
         layout.addWidget(self.users_table, 1)
@@ -131,22 +133,55 @@ class AdminConsole(QMainWindow):
     def _build_user_admin_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
+
+        create_actions = QHBoxLayout()
+        self.create_username_input = QLineEdit()
+        self.create_username_input.setPlaceholderText("新用户名")
+        self.create_password_input = QLineEdit()
+        self.create_password_input.setPlaceholderText("初始密码")
+        self.create_password_input.setEchoMode(QLineEdit.Password)
+        self.create_role_selector = QComboBox()
+        self.create_role_selector.addItem("普通用户", "user")
+        self.create_role_selector.addItem("管理员", "admin")
+        self.create_user_button = QPushButton("创建用户")
+        self.create_user_button.clicked.connect(self.create_user)
+        create_actions.addWidget(QLabel("新用户"))
+        create_actions.addWidget(self.create_username_input)
+        create_actions.addWidget(QLabel("密码"))
+        create_actions.addWidget(self.create_password_input)
+        create_actions.addWidget(QLabel("角色"))
+        create_actions.addWidget(self.create_role_selector)
+        create_actions.addWidget(self.create_user_button)
+        layout.addLayout(create_actions)
+
         actions = QHBoxLayout()
-        self.refresh_roles_button = QPushButton("Refresh Users")
+        self.refresh_roles_button = QPushButton("刷新用户")
         self.refresh_roles_button.clicked.connect(self.refresh_user_roles)
         self.role_selector = QComboBox()
-        self.role_selector.addItems(["user", "admin"])
-        self.apply_role_button = QPushButton("Set Selected Role")
+        self.role_selector.addItem("普通用户", "user")
+        self.role_selector.addItem("管理员", "admin")
+        self.apply_role_button = QPushButton("设置选中角色")
         self.apply_role_button.clicked.connect(self.set_selected_user_role)
+        self.reset_password_input = QLineEdit()
+        self.reset_password_input.setPlaceholderText("新密码")
+        self.reset_password_input.setEchoMode(QLineEdit.Password)
+        self.reset_password_button = QPushButton("重置选中用户密码")
+        self.reset_password_button.clicked.connect(self.reset_selected_user_password)
+        self.delete_user_button = QPushButton("删除选中用户")
+        self.delete_user_button.clicked.connect(self.delete_selected_user)
         actions.addWidget(self.refresh_roles_button)
-        actions.addWidget(QLabel("Role"))
+        actions.addWidget(QLabel("角色"))
         actions.addWidget(self.role_selector)
         actions.addWidget(self.apply_role_button)
+        actions.addWidget(QLabel("新密码"))
+        actions.addWidget(self.reset_password_input)
+        actions.addWidget(self.reset_password_button)
+        actions.addWidget(self.delete_user_button)
         actions.addStretch(1)
         layout.addLayout(actions)
 
         self.roles_table = QTableWidget(0, 5)
-        self.roles_table.setHorizontalHeaderLabels(["User", "AS Role", "Chat Role", "AS Created", "Chat Created"])
+        self.roles_table.setHorizontalHeaderLabels(["用户", "AS 角色", "聊天角色", "AS 创建时间", "聊天创建时间"])
         self._stretch_table(self.roles_table)
         layout.addWidget(self.roles_table, 1)
         return tab
@@ -155,11 +190,11 @@ class AdminConsole(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         actions = QHBoxLayout()
-        self.refresh_sessions_button = QPushButton("Refresh Sessions")
+        self.refresh_sessions_button = QPushButton("刷新会话")
         self.refresh_sessions_button.clicked.connect(self.refresh_sessions)
-        self.invalidate_session_button = QPushButton("Invalidate Selected User Sessions")
+        self.invalidate_session_button = QPushButton("使选中用户会话失效")
         self.invalidate_session_button.clicked.connect(self.invalidate_selected_sessions)
-        self.kick_session_button = QPushButton("Kick Selected User Online")
+        self.kick_session_button = QPushButton("踢出选中在线用户")
         self.kick_session_button.clicked.connect(self.kick_selected_session_user)
         actions.addWidget(self.refresh_sessions_button)
         actions.addWidget(self.invalidate_session_button)
@@ -169,7 +204,7 @@ class AdminConsole(QMainWindow):
 
         self.sessions_table = QTableWidget(0, 9)
         self.sessions_table.setHorizontalHeaderLabels(
-            ["User", "Session", "IP", "TGT Issued", "TGT Expires", "Service Issued", "Service Expires", "Last Seen", "Status"]
+            ["用户", "会话", "IP", "TGT 签发", "TGT 过期", "服务票据签发", "服务票据过期", "最后在线", "状态"]
         )
         self._stretch_table(self.sessions_table)
         layout.addWidget(self.sessions_table, 1)
@@ -180,27 +215,27 @@ class AdminConsole(QMainWindow):
         layout = QVBoxLayout(tab)
         actions = QHBoxLayout()
         self.ban_ip_input = QLineEdit()
-        self.ban_ip_input.setPlaceholderText("IP address")
+        self.ban_ip_input.setPlaceholderText("IP 地址")
         self.ban_minutes_input = QSpinBox()
         self.ban_minutes_input.setRange(1, 1440)
         self.ban_minutes_input.setValue(30)
-        self.ban_reason_input = QLineEdit("Banned by admin console")
-        self.add_ip_ban_button = QPushButton("Ban IP")
+        self.ban_reason_input = QLineEdit("管理员封禁")
+        self.add_ip_ban_button = QPushButton("封禁 IP")
         self.add_ip_ban_button.clicked.connect(self.add_ip_ban)
-        self.refresh_ip_bans_button = QPushButton("Refresh IP Bans")
+        self.refresh_ip_bans_button = QPushButton("刷新 IP 封禁")
         self.refresh_ip_bans_button.clicked.connect(self.refresh_ip_bans)
         actions.addWidget(QLabel("IP"))
         actions.addWidget(self.ban_ip_input)
-        actions.addWidget(QLabel("Minutes"))
+        actions.addWidget(QLabel("分钟"))
         actions.addWidget(self.ban_minutes_input)
-        actions.addWidget(QLabel("Reason"))
+        actions.addWidget(QLabel("原因"))
         actions.addWidget(self.ban_reason_input, 1)
         actions.addWidget(self.add_ip_ban_button)
         actions.addWidget(self.refresh_ip_bans_button)
         layout.addLayout(actions)
 
         self.ip_bans_table = QTableWidget(0, 6)
-        self.ip_bans_table.setHorizontalHeaderLabels(["ID", "IP", "Reason", "Created", "Expires", "Active"])
+        self.ip_bans_table.setHorizontalHeaderLabels(["ID", "IP", "原因", "创建时间", "过期时间", "是否生效"])
         self._stretch_table(self.ip_bans_table)
         layout.addWidget(self.ip_bans_table, 1)
         return tab
@@ -210,20 +245,22 @@ class AdminConsole(QMainWindow):
         layout = QVBoxLayout(tab)
         filters = QHBoxLayout()
         self.chat_type_filter = QComboBox()
-        self.chat_type_filter.addItems(["All", "group", "private"])
+        self.chat_type_filter.addItem("全部", "All")
+        self.chat_type_filter.addItem("群聊", "group")
+        self.chat_type_filter.addItem("私聊", "private")
         self.chat_user_filter = QLineEdit()
-        self.chat_user_filter.setPlaceholderText("sender/recipient filter")
-        self.refresh_chat_button = QPushButton("Query Chat Records")
+        self.chat_user_filter.setPlaceholderText("发送者/接收者过滤")
+        self.refresh_chat_button = QPushButton("查询聊天记录")
         self.refresh_chat_button.clicked.connect(self.refresh_chat_records)
-        filters.addWidget(QLabel("Type"))
+        filters.addWidget(QLabel("类型"))
         filters.addWidget(self.chat_type_filter)
-        filters.addWidget(QLabel("User"))
+        filters.addWidget(QLabel("用户"))
         filters.addWidget(self.chat_user_filter, 1)
         filters.addWidget(self.refresh_chat_button)
         layout.addLayout(filters)
 
         self.chat_table = QTableWidget(0, 8)
-        self.chat_table.setHorizontalHeaderLabels(["ID", "Time", "Type", "Session", "Sender", "Recipient", "Content", "File"])
+        self.chat_table.setHorizontalHeaderLabels(["ID", "时间", "类型", "会话", "发送者", "接收者", "内容", "文件"])
         self._stretch_table(self.chat_table)
         layout.addWidget(self.chat_table, 1)
         return tab
@@ -233,23 +270,25 @@ class AdminConsole(QMainWindow):
         layout = QVBoxLayout(tab)
         filters = QHBoxLayout()
         self.audit_db_filter = QComboBox()
-        self.audit_db_filter.addItems(["as", "tgs", "chat"])
+        self.audit_db_filter.addItem("AS 认证服务器", "as")
+        self.audit_db_filter.addItem("TGS 票据服务器", "tgs")
+        self.audit_db_filter.addItem("聊天服务器", "chat")
         self.audit_action_filter = QLineEdit()
-        self.audit_action_filter.setPlaceholderText("action_type filter")
-        self.refresh_audit_button = QPushButton("Query Audit Logs")
+        self.audit_action_filter.setPlaceholderText("操作类型过滤")
+        self.refresh_audit_button = QPushButton("查询审计日志")
         self.refresh_audit_button.clicked.connect(self.refresh_audit_logs)
-        self.export_audit_button = QPushButton("Export CSV")
+        self.export_audit_button = QPushButton("导出 CSV")
         self.export_audit_button.clicked.connect(self.export_audit_csv)
-        filters.addWidget(QLabel("DB"))
+        filters.addWidget(QLabel("数据库"))
         filters.addWidget(self.audit_db_filter)
-        filters.addWidget(QLabel("Action"))
+        filters.addWidget(QLabel("操作"))
         filters.addWidget(self.audit_action_filter, 1)
         filters.addWidget(self.refresh_audit_button)
         filters.addWidget(self.export_audit_button)
         layout.addLayout(filters)
 
         self.audit_table = QTableWidget(0, 7)
-        self.audit_table.setHorizontalHeaderLabels(["ID", "Time", "User", "IP", "Action", "Content", "Signature"])
+        self.audit_table.setHorizontalHeaderLabels(["ID", "时间", "用户", "IP", "操作", "内容", "签名"])
         self._stretch_table(self.audit_table)
         layout.addWidget(self.audit_table, 1)
         return tab
@@ -257,7 +296,7 @@ class AdminConsole(QMainWindow):
     def _build_status_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        self.refresh_status_button = QPushButton("Refresh Service Status")
+        self.refresh_status_button = QPushButton("刷新服务状态")
         self.refresh_status_button.clicked.connect(self.refresh_status)
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
@@ -270,9 +309,10 @@ class AdminConsole(QMainWindow):
             "username": self.username_input.text().strip(),
             "password": self.password_input.text(),
             "as": (self.as_host_input.text().strip(), int(self.as_port_input.value())),
+            "client_type": "admin_console",
         }
         if not payload["username"] or not payload["password"]:
-            QMessageBox.warning(self, "Authentication Failed", "Enter admin username and password.")
+            QMessageBox.warning(self, "认证失败", "请输入管理员用户名和密码。")
             return
         self.login_button.setEnabled(False)
         try:
@@ -284,15 +324,15 @@ class AdminConsole(QMainWindow):
             self._auth_client = client
             self._admin_token = client.request_admin_token()
             self.password_input.clear()
-            self.login_status.setText(f"Authenticated: {client.username}")
+            self.login_status.setText(f"已认证：{client.username}")
             self._set_admin_actions_enabled(True)
             self.refresh_all()
         except Exception as exc:
             self._auth_client = None
             self._admin_token = ""
-            self.login_status.setText("Authentication failed")
+            self.login_status.setText("认证失败")
             self._set_admin_actions_enabled(False)
-            QMessageBox.critical(self, "Authentication Failed", str(exc))
+            QMessageBox.critical(self, "认证失败", str(exc))
         finally:
             self.login_button.setEnabled(True)
 
@@ -311,7 +351,7 @@ class AdminConsole(QMainWindow):
         try:
             self._contacts = self._auth_client.fetch_online_users()
         except Exception as exc:
-            QMessageBox.critical(self, "Refresh Failed", str(exc))
+            QMessageBox.critical(self, "刷新失败", str(exc))
             return
         self.users_table.setRowCount(0)
         for user in self._contacts:
@@ -322,11 +362,11 @@ class AdminConsole(QMainWindow):
                 row,
                 [
                     user.get("username", ""),
-                    user.get("role", "user"),
-                    user.get("status", ""),
+                    self._role_text(user.get("role", "user")),
+                    self._status_label(user.get("status", "")),
                     user.get("client_ip", ""),
                     self._format_ts(user.get("last_seen", 0)),
-                    "yes" if user.get("muted") else "no",
+                    "是" if user.get("muted") else "否",
                     self._format_ts(user.get("muted_until", 0)),
                     user.get("session_id", ""),
                 ],
@@ -340,10 +380,10 @@ class AdminConsole(QMainWindow):
             self._auth_client.admin_mute_user(
                 username,
                 duration_seconds=int(self.duration_input.value()) * 60,
-                reason=self.reason_input.text().strip() or "admin mute",
+                reason=self.reason_input.text().strip() or "管理员禁言",
             )
         except Exception as exc:
-            QMessageBox.critical(self, "Mute Failed", str(exc))
+            QMessageBox.critical(self, "禁言失败", str(exc))
             return
         self.refresh_users()
         self.refresh_audit_logs()
@@ -355,7 +395,7 @@ class AdminConsole(QMainWindow):
         try:
             self._auth_client.admin_unmute_user(username)
         except Exception as exc:
-            QMessageBox.critical(self, "Unmute Failed", str(exc))
+            QMessageBox.critical(self, "解除禁言失败", str(exc))
             return
         self.refresh_users()
         self.refresh_audit_logs()
@@ -377,8 +417,8 @@ class AdminConsole(QMainWindow):
                 row,
                 [
                     username,
-                    as_users.get(username, {}).get("role", ""),
-                    chat_users.get(username, {}).get("role", ""),
+                    self._role_text(as_users.get(username, {}).get("role", "")),
+                    self._role_text(chat_users.get(username, {}).get("role", "")),
                     self._format_ts(as_users.get(username, {}).get("created_at", 0)),
                     self._format_ts(chat_users.get(username, {}).get("created_at", 0)),
                 ],
@@ -388,13 +428,88 @@ class AdminConsole(QMainWindow):
         username = self._selected_username(self.roles_table, allow_self=True)
         if not username:
             return
-        role = self.role_selector.currentText()
+        if username == (self._auth_client.username if self._auth_client else ""):
+            QMessageBox.warning(self, "操作无效", "不能修改当前管理员自己的角色。")
+            return
+        role = self.role_selector.currentData()
         self._as_admin_request("AS_ADMIN_SET_ROLE", {"target_username": username, "role": role})
         if self._auth_client:
             self._auth_client.chat_admin_set_role(username, role)
         self.refresh_user_roles()
         self.refresh_users()
-        QMessageBox.information(self, "Role Updated", f"{username} is now {role}.")
+        QMessageBox.information(self, "角色已更新", f"{username} 当前角色为：{self._role_text(role)}。")
+
+    def create_user(self) -> None:
+        username = self.create_username_input.text().strip()
+        password = self.create_password_input.text()
+        role = self.create_role_selector.currentData()
+        if not username or not password:
+            QMessageBox.warning(self, "创建失败", "请输入用户名和初始密码。")
+            return
+        try:
+            self._as_admin_request(
+                "AS_ADMIN_CREATE_USER",
+                {"username": username, "password": password, "role": role},
+            )
+            if self._auth_client:
+                self._auth_client.chat_admin_set_role(username, role)
+        except Exception as exc:
+            QMessageBox.critical(self, "创建失败", str(exc))
+            return
+        self.create_username_input.clear()
+        self.create_password_input.clear()
+        self.refresh_user_roles()
+        self.refresh_users()
+        QMessageBox.information(self, "创建成功", f"用户 {username} 已创建。")
+
+    def reset_selected_user_password(self) -> None:
+        username = self._selected_username(self.roles_table, allow_self=True)
+        password = self.reset_password_input.text()
+        if not username:
+            return
+        if not password:
+            QMessageBox.warning(self, "重置失败", "请输入新密码。")
+            return
+        try:
+            self._as_admin_request(
+                "AS_ADMIN_RESET_PASSWORD",
+                {"target_username": username, "password": password},
+            )
+            self._kick_user(username, show_errors=False)
+        except Exception as exc:
+            QMessageBox.critical(self, "重置失败", str(exc))
+            return
+        self.reset_password_input.clear()
+        self.refresh_sessions()
+        QMessageBox.information(self, "密码已重置", f"{username} 的密码已更新，现有会话已失效。")
+
+    def delete_selected_user(self) -> None:
+        username = self._selected_username(self.roles_table, allow_self=True)
+        if not username:
+            return
+        if username == (self._auth_client.username if self._auth_client else ""):
+            QMessageBox.warning(self, "操作无效", "不能删除当前管理员自己。")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "确认删除用户",
+            f"确定删除用户 {username}？聊天记录和审计日志会保留。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            self._as_admin_request("AS_ADMIN_DELETE_USER", {"target_username": username})
+            if self._auth_client:
+                self._auth_client.chat_admin_delete_user(username)
+        except Exception as exc:
+            QMessageBox.critical(self, "删除失败", str(exc))
+            return
+        self.refresh_user_roles()
+        self.refresh_users()
+        self.refresh_sessions()
+        QMessageBox.information(self, "删除成功", f"用户 {username} 已删除。")
 
     def refresh_sessions(self) -> None:
         rows = self._as_admin_request("AS_ADMIN_LIST_SESSIONS").get("sessions", [])
@@ -414,7 +529,7 @@ class AdminConsole(QMainWindow):
                     self._format_ts(item["service_ticket_issued_at"]),
                     self._format_ts(item["service_ticket_expires_at"]),
                     self._format_ts(item["last_seen"]),
-                    item["status"],
+                    self._status_label(item["status"]),
                 ],
             )
 
@@ -426,7 +541,7 @@ class AdminConsole(QMainWindow):
         self._kick_user(username, show_errors=False)
         self.refresh_sessions()
         self.refresh_users()
-        QMessageBox.information(self, "Session Invalidated", f"Active sessions for {username} were invalidated.")
+        QMessageBox.information(self, "会话已失效", f"{username} 的活动会话已失效。")
 
     def kick_selected_session_user(self) -> None:
         username = self._selected_username(self.sessions_table, allow_self=True)
@@ -435,7 +550,7 @@ class AdminConsole(QMainWindow):
     def add_ip_ban(self) -> None:
         ip = self.ban_ip_input.text().strip()
         if not ip:
-            QMessageBox.warning(self, "Missing IP", "Enter an IP address.")
+            QMessageBox.warning(self, "缺少 IP", "请输入 IP 地址。")
             return
         ban_seconds = int(self.ban_minutes_input.value()) * 60
         self._as_admin_request(
@@ -465,12 +580,12 @@ class AdminConsole(QMainWindow):
                     item["reason"],
                     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(item["created_at"]))),
                     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires)),
-                    "yes" if expires >= now else "no",
+                    "是" if expires >= now else "否",
                 ],
             )
 
     def refresh_chat_records(self) -> None:
-        chat_type = self.chat_type_filter.currentText()
+        chat_type = self.chat_type_filter.currentData()
         user_filter = self.chat_user_filter.text().strip()
         rows = self._auth_client.chat_admin_list_messages(chat_type, user_filter, 200) if self._auth_client else []
         self.chat_table.setRowCount(0)
@@ -483,7 +598,7 @@ class AdminConsole(QMainWindow):
                 [
                     item["id"],
                     self._format_ts(item["created_at"]),
-                    item["chat_type"],
+                    self._chat_type_text(item["chat_type"]),
                     item["session_key"],
                     item["sender"],
                     item["recipient"],
@@ -506,14 +621,14 @@ class AdminConsole(QMainWindow):
                     self._format_ts(item["timestamp"]),
                     item["user_id"],
                     item["client_ip"],
-                    item["action_type"],
+                    self._action_text(item["action_type"]),
                     self._short_text(item["content_enc"], 160),
                     self._short_text(item["signature"], 60),
                 ],
             )
 
     def export_audit_csv(self) -> None:
-        target, _ = QFileDialog.getSaveFileName(self, "Export Audit CSV", "safechat_audit.csv", "CSV Files (*.csv)")
+        target, _ = QFileDialog.getSaveFileName(self, "导出审计 CSV", "safechat_audit.csv", "CSV 文件 (*.csv)")
         if not target:
             return
         rows = self._audit_rows(limit=5000)
@@ -527,20 +642,21 @@ class AdminConsole(QMainWindow):
                 row = dict(row)
                 row["time_text"] = self._format_ts(row.get("timestamp", 0))
                 writer.writerow(row)
-        QMessageBox.information(self, "Export Complete", target)
+        QMessageBox.information(self, "导出完成", target)
 
     def refresh_status(self) -> None:
-        lines = ["SafeChat Admin Console Status", ""]
+        lines = ["SafeChat 管理端状态", ""]
         for section in ("as_server", "tgs_server", "chat_server"):
             host, port = service_address(section)
-            lines.append(f"{section}: {host}:{port}    {'online' if self._tcp_check(host, port) else 'unreachable'}")
+            status = "在线" if self._tcp_check(host, port) else "不可达"
+            lines.append(f"{self._service_text(section)}：{host}:{port}    {status}")
         lines.append("")
-        lines.append("Admin APIs: mute, unmute, kick are enforced by ChatServer.")
-        lines.append("All admin data is requested from AS, TGS, or ChatServer APIs. The console does not open SQLite files.")
+        lines.append("管理接口：禁言、解除禁言、踢出由 ChatServer 执行。")
+        lines.append("数据来源：管理端只通过 AS、TGS、ChatServer 的接口获取数据，不直接打开 SQLite 文件。")
         self.status_text.setPlainText("\n".join(lines))
 
     def _audit_rows(self, limit: int) -> list[dict[str, Any]]:
-        role = self.audit_db_filter.currentText()
+        role = self.audit_db_filter.currentData()
         action_filter = self.audit_action_filter.text().strip()
         if role == "as":
             return self._as_admin_request(
@@ -563,7 +679,7 @@ class AdminConsole(QMainWindow):
             self._auth_client.admin_kick_user(username)
         except Exception as exc:
             if show_errors:
-                QMessageBox.critical(self, "Kick Failed", str(exc))
+                QMessageBox.critical(self, "踢出失败", str(exc))
             return
         self.refresh_users()
         self.refresh_audit_logs()
@@ -571,13 +687,13 @@ class AdminConsole(QMainWindow):
     def _selected_username(self, table: QTableWidget, allow_self: bool = False) -> str:
         selected = table.selectedItems()
         if not selected:
-            QMessageBox.information(self, "Select User", "Select a user row first.")
+            QMessageBox.information(self, "请选择用户", "请先选择一个用户行。")
             return ""
         row = selected[0].row()
         item = table.item(row, 0)
         username = item.text() if item else ""
         if not allow_self and username == (self._auth_client.username if self._auth_client else ""):
-            QMessageBox.warning(self, "Invalid Operation", "Do not operate on the current admin account here.")
+            QMessageBox.warning(self, "操作无效", "不要在这里操作当前管理员账号。")
             return ""
         return username
 
@@ -590,6 +706,9 @@ class AdminConsole(QMainWindow):
             "invalidate_session_button",
             "kick_session_button",
             "apply_role_button",
+            "create_user_button",
+            "reset_password_button",
+            "delete_user_button",
             "add_ip_ban_button",
             "refresh_roles_button",
             "refresh_sessions_button",
@@ -607,7 +726,7 @@ class AdminConsole(QMainWindow):
         body = {"admin_token": self._admin_token, **(fields or {})}
         response = request(host, port, Message(type=action_type, seq=0, body=body), timeout=10.0)
         if response["type"] == "ERROR":
-            raise RuntimeError(response["body"].get("error", "AS admin request failed"))
+            raise RuntimeError(response["body"].get("error", "AS 管理请求失败"))
         return response["body"]
 
     def _tgs_admin_request(self, action_type: str, fields: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -615,7 +734,7 @@ class AdminConsole(QMainWindow):
         body = {"admin_token": self._admin_token, **(fields or {})}
         response = request(host, port, Message(type=action_type, seq=0, body=body), timeout=10.0)
         if response["type"] == "ERROR":
-            raise RuntimeError(response["body"].get("error", "TGS admin request failed"))
+            raise RuntimeError(response["body"].get("error", "TGS 管理请求失败"))
         return response["body"]
 
     @staticmethod
@@ -654,3 +773,63 @@ class AdminConsole(QMainWindow):
     def _short_text(value: Any, limit: int) -> str:
         text = str(value or "")
         return text if len(text) <= limit else text[:limit] + "..."
+
+    @staticmethod
+    def _role_text(value: Any) -> str:
+        return {"admin": "管理员", "user": "普通用户"}.get(str(value or ""), str(value or ""))
+
+    @staticmethod
+    def _chat_type_text(value: Any) -> str:
+        return {"group": "群聊", "private": "私聊", "All": "全部"}.get(str(value or ""), str(value or ""))
+
+    @staticmethod
+    def _status_label(value: Any) -> str:
+        text = str(value or "")
+        return {"online": "在线", "offline": "离线", "active": "有效", "invalid": "失效"}.get(text, text)
+
+    @staticmethod
+    def _service_text(value: str) -> str:
+        return {
+            "as_server": "AS 认证服务器",
+            "tgs_server": "TGS 票据服务器",
+            "chat_server": "聊天服务器",
+        }.get(value, value)
+
+    @staticmethod
+    def _action_text(value: Any) -> str:
+        text = str(value or "")
+        return {
+            "LOGIN_FAILED": "登录失败",
+            "LOGIN_DENIED_DUPLICATE": "重复登录被拒绝",
+            "LOGIN_AS_OK": "AS 登录成功",
+            "TGS_ERROR": "TGS 错误",
+            "TGS_TICKET_OK": "TGS 签发服务票据",
+            "CHAT_AUTH_OK": "聊天服务认证成功",
+            "CHAT_SIGN_FAILED": "聊天签名校验失败",
+            "CHAT_SEND_MUTED": "禁言用户发送消息被拒绝",
+            "IMAGE_SEND_MUTED": "禁言用户发送图片被拒绝",
+            "CHAT_SEND_OFFLINE": "私聊离线消息",
+            "CHAT_SEND": "发送聊天消息",
+            "CHAT_POLL": "拉取聊天消息",
+            "CHAT_SESSION_REVOKED": "聊天会话已撤销",
+            "USER_LIST": "查询用户列表",
+            "ADMIN_MUTE_DENIED": "禁言权限不足",
+            "ADMIN_MUTE_USER": "管理员禁言用户",
+            "ADMIN_UNMUTE_DENIED": "解除禁言权限不足",
+            "ADMIN_UNMUTE_USER": "管理员解除禁言",
+            "ADMIN_KICK_DENIED": "踢出权限不足",
+            "ADMIN_KICK_USER": "管理员踢出用户",
+            "AS_ADMIN_DENIED": "AS 管理权限不足",
+            "AS_ADMIN_CREATE_USER": "AS 创建用户",
+            "AS_ADMIN_DELETE_USER": "AS 删除用户",
+            "AS_ADMIN_SET_ROLE": "AS 设置用户角色",
+            "AS_ADMIN_RESET_PASSWORD": "AS 重置用户密码",
+            "AS_ADMIN_INVALIDATE_USER": "AS 使用户会话失效",
+            "AS_ADMIN_BAN_IP": "AS 封禁 IP",
+            "AS_ADMIN_TOKEN_DENIED": "管理员令牌申请被拒绝",
+            "AS_ADMIN_TOKEN_OK": "管理员令牌签发成功",
+            "TGS_ADMIN_DENIED": "TGS 管理权限不足",
+            "CHAT_ADMIN_LIST_MESSAGES": "管理端查询聊天记录",
+            "CHAT_ADMIN_SET_ROLE": "聊天服务设置用户角色",
+            "CHAT_ADMIN_DELETE_USER": "聊天服务删除用户副本",
+        }.get(text, text)
