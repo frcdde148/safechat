@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import csv
-import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
 from PyQt5.QtCore import Qt
@@ -31,7 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from client.net.auth_client import AuthClient
-from common.config.settings import database_path, load_settings, service_address
+from common.config.settings import load_settings, service_address
 from common.protocol.message import Message
 from common.protocol.socket_io import request
 
@@ -48,6 +46,7 @@ class AdminConsole(QMainWindow):
         self.resize(1500, 930)
         self._settings = load_settings()
         self._auth_client: AuthClient | None = None
+        self._admin_token = ""
         self._contacts: list[dict[str, Any]] = []
 
         root = QWidget()
@@ -67,9 +66,6 @@ class AdminConsole(QMainWindow):
         self.setCentralWidget(root)
         self._set_admin_actions_enabled(False)
         self.refresh_status()
-        self.refresh_user_roles()
-        self.refresh_sessions()
-        self.refresh_ip_bans()
 
     def _build_login_panel(self) -> QGroupBox:
         group = QGroupBox("Admin Kerberos Authentication")
@@ -286,11 +282,14 @@ class AdminConsole(QMainWindow):
                 if not ok:
                     raise RuntimeError(detail)
             self._auth_client = client
+            self._admin_token = client.request_admin_token()
+            self.password_input.clear()
             self.login_status.setText(f"Authenticated: {client.username}")
             self._set_admin_actions_enabled(True)
             self.refresh_all()
         except Exception as exc:
             self._auth_client = None
+            self._admin_token = ""
             self.login_status.setText("Authentication failed")
             self._set_admin_actions_enabled(False)
             QMessageBox.critical(self, "Authentication Failed", str(exc))
@@ -366,8 +365,8 @@ class AdminConsole(QMainWindow):
         self._kick_user(username)
 
     def refresh_user_roles(self) -> None:
-        as_users = {row["username"]: row for row in self._query_db(database_path("as"), "SELECT username, role, created_at FROM users", [])}
-        chat_users = {row["username"]: row for row in self._query_db(database_path("chat"), "SELECT username, role, created_at FROM users", [])}
+        as_users = {row["username"]: row for row in self._as_admin_request("AS_ADMIN_LIST_USERS").get("users", [])}
+        chat_users = {row["username"]: row for row in (self._contacts or [])}
         names = sorted(set(as_users) | set(chat_users))
         self.roles_table.setRowCount(0)
         for username in names:
@@ -390,28 +389,15 @@ class AdminConsole(QMainWindow):
         if not username:
             return
         role = self.role_selector.currentText()
-        for db_role in ("as", "chat"):
-            self._execute_db(
-                database_path(db_role),
-                "UPDATE users SET role = ? WHERE username = ?",
-                [role, username],
-            )
+        self._as_admin_request("AS_ADMIN_SET_ROLE", {"target_username": username, "role": role})
+        if self._auth_client:
+            self._auth_client.chat_admin_set_role(username, role)
         self.refresh_user_roles()
         self.refresh_users()
         QMessageBox.information(self, "Role Updated", f"{username} is now {role}.")
 
     def refresh_sessions(self) -> None:
-        rows = self._query_db(
-            database_path("as"),
-            """
-            SELECT username, session_id, client_ip, tgt_issued_at, tgt_expires_at,
-                   service_ticket_issued_at, service_ticket_expires_at, last_seen, status
-            FROM active_sessions
-            ORDER BY id DESC
-            LIMIT 300
-            """,
-            [],
-        )
+        rows = self._as_admin_request("AS_ADMIN_LIST_SESSIONS").get("sessions", [])
         self.sessions_table.setRowCount(0)
         for item in rows:
             row = self.sessions_table.rowCount()
@@ -436,11 +422,7 @@ class AdminConsole(QMainWindow):
         username = self._selected_username(self.sessions_table, allow_self=True)
         if not username:
             return
-        self._execute_db(
-            database_path("as"),
-            "UPDATE active_sessions SET status = 'invalidated' WHERE username = ? AND status = 'active'",
-            [username],
-        )
+        self._as_admin_request("AS_ADMIN_INVALIDATE_USER", {"target_username": username})
         self._kick_user(username, show_errors=False)
         self.refresh_sessions()
         self.refresh_users()
@@ -456,26 +438,18 @@ class AdminConsole(QMainWindow):
             QMessageBox.warning(self, "Missing IP", "Enter an IP address.")
             return
         ban_seconds = int(self.ban_minutes_input.value()) * 60
-        self._execute_db(
-            database_path("as"),
-            """
-            INSERT INTO ip_bans (ip_address, reason, ban_time, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(ip_address) DO UPDATE SET
-                reason = excluded.reason,
-                ban_time = excluded.ban_time,
-                created_at = excluded.created_at
-            """,
-            [ip, self.ban_reason_input.text().strip(), ban_seconds, int(time.time())],
+        self._as_admin_request(
+            "AS_ADMIN_BAN_IP",
+            {
+                "ip_address": ip,
+                "reason": self.ban_reason_input.text().strip(),
+                "ban_seconds": ban_seconds,
+            },
         )
         self.refresh_ip_bans()
 
     def refresh_ip_bans(self) -> None:
-        rows = self._query_db(
-            database_path("as"),
-            "SELECT id, ip_address, reason, ban_time, created_at FROM ip_bans ORDER BY id DESC LIMIT 200",
-            [],
-        )
+        rows = self._as_admin_request("AS_ADMIN_LIST_IP_BANS").get("ip_bans", [])
         now = int(time.time())
         self.ip_bans_table.setRowCount(0)
         for item in rows:
@@ -496,25 +470,9 @@ class AdminConsole(QMainWindow):
             )
 
     def refresh_chat_records(self) -> None:
-        query = """
-            SELECT id, created_at, chat_type, session_key, sender, recipient,
-                   message_text, file_name
-            FROM chat_messages
-        """
-        clauses: list[str] = []
-        params: list[Any] = []
         chat_type = self.chat_type_filter.currentText()
-        if chat_type != "All":
-            clauses.append("chat_type = ?")
-            params.append(chat_type)
         user_filter = self.chat_user_filter.text().strip()
-        if user_filter:
-            clauses.append("(sender LIKE ? OR recipient LIKE ?)")
-            params.extend([f"%{user_filter}%", f"%{user_filter}%"])
-        if clauses:
-            query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY id DESC LIMIT 200"
-        rows = self._query_db(database_path("chat"), query, params)
+        rows = self._auth_client.chat_admin_list_messages(chat_type, user_filter, 200) if self._auth_client else []
         self.chat_table.setRowCount(0)
         for item in rows:
             row = self.chat_table.rowCount()
@@ -577,24 +535,26 @@ class AdminConsole(QMainWindow):
             host, port = service_address(section)
             lines.append(f"{section}: {host}:{port}    {'online' if self._tcp_check(host, port) else 'unreachable'}")
         lines.append("")
-        for role in ("as", "tgs", "chat"):
-            path = database_path(role)
-            lines.append(f"{role}.db: {path}    {'exists' if path.exists() else 'missing'}")
-        lines.append("")
         lines.append("Admin APIs: mute, unmute, kick are enforced by ChatServer.")
-        lines.append("DB tools: roles, AS sessions, IP bans, chat records, and audit exports use configured SQLite paths.")
+        lines.append("All admin data is requested from AS, TGS, or ChatServer APIs. The console does not open SQLite files.")
         self.status_text.setPlainText("\n".join(lines))
 
     def _audit_rows(self, limit: int) -> list[dict[str, Any]]:
         role = self.audit_db_filter.currentText()
-        query = "SELECT id, timestamp, user_id, client_ip, action_type, content_enc, signature FROM audit_logs"
-        params: list[Any] = []
         action_filter = self.audit_action_filter.text().strip()
-        if action_filter:
-            query += " WHERE action_type LIKE ?"
-            params.append(f"%{action_filter}%")
-        query += f" ORDER BY id DESC LIMIT {int(limit)}"
-        return self._query_db(database_path(role), query, params)
+        if role == "as":
+            return self._as_admin_request(
+                "AS_ADMIN_AUDIT_QUERY",
+                {"action_filter": action_filter, "limit": int(limit)},
+            ).get("audit_logs", [])
+        if role == "tgs":
+            return self._tgs_admin_request(
+                "TGS_ADMIN_AUDIT_QUERY",
+                {"action_filter": action_filter, "limit": int(limit)},
+            ).get("audit_logs", [])
+        if self._auth_client:
+            return self._auth_client.chat_admin_audit_query(action_filter, int(limit))
+        return []
 
     def _kick_user(self, username: str, show_errors: bool = True) -> None:
         if not username or not self._auth_client:
@@ -629,30 +589,34 @@ class AdminConsole(QMainWindow):
             "kick_button",
             "invalidate_session_button",
             "kick_session_button",
+            "apply_role_button",
+            "add_ip_ban_button",
+            "refresh_roles_button",
+            "refresh_sessions_button",
+            "refresh_ip_bans_button",
+            "refresh_chat_button",
+            "refresh_audit_button",
+            "export_audit_button",
         ):
             widget = getattr(self, name, None)
             if widget:
                 widget.setEnabled(enabled)
 
-    @staticmethod
-    def _query_db(path: Path, query: str, params: list[Any]) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        uri = f"file:{path.as_posix()}?mode=ro"
-        try:
-            with sqlite3.connect(uri, uri=True) as conn:
-                conn.row_factory = sqlite3.Row
-                return [dict(row) for row in conn.execute(query, params).fetchall()]
-        except sqlite3.Error:
-            return []
+    def _as_admin_request(self, action_type: str, fields: dict[str, Any] | None = None) -> dict[str, Any]:
+        host, port = service_address("as_server")
+        body = {"admin_token": self._admin_token, **(fields or {})}
+        response = request(host, port, Message(type=action_type, seq=0, body=body), timeout=10.0)
+        if response["type"] == "ERROR":
+            raise RuntimeError(response["body"].get("error", "AS admin request failed"))
+        return response["body"]
 
-    @staticmethod
-    def _execute_db(path: Path, query: str, params: list[Any]) -> int:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(path) as conn:
-            cursor = conn.execute(query, params)
-            conn.commit()
-            return int(cursor.rowcount)
+    def _tgs_admin_request(self, action_type: str, fields: dict[str, Any] | None = None) -> dict[str, Any]:
+        host, port = service_address("tgs_server")
+        body = {"admin_token": self._admin_token, **(fields or {})}
+        response = request(host, port, Message(type=action_type, seq=0, body=body), timeout=10.0)
+        if response["type"] == "ERROR":
+            raise RuntimeError(response["body"].get("error", "TGS admin request failed"))
+        return response["body"]
 
     @staticmethod
     def _tcp_check(host: str, port: int) -> bool:

@@ -13,28 +13,29 @@ admin / admin123
 ```
 
 The console uses Kerberos authentication through AS/TGS/ChatServer, then calls
-ChatServer admin APIs for mute/unmute operations. Chat records and audit logs
-are queried read-only from the SQLite database paths in `settings.json`.
+server-side admin APIs. It no longer opens SQLite database files directly.
 
 Implemented console pages:
 
-- `Online / Mute`: online contacts, mute/unmute, and kick online users.
-- `Users / Roles`: update user/admin roles in AS and ChatServer databases.
-- `Tickets / Sessions`: inspect AS active sessions, invalidate sessions, and kick users online.
-- `IP Bans`: write temporary IP bans to the AS database.
-- `Chat Records`: query traceable chat history from ChatServer database.
-- `Audit Logs`: query and export AS/TGS/ChatServer audit logs as CSV.
+- `Online / Mute`: online contacts, mute/unmute, and kick online users through ChatServer.
+- `Users / Roles`: update user/admin roles through AS and ChatServer admin APIs.
+- `Tickets / Sessions`: inspect AS active sessions and invalidate sessions through AS.
+- `IP Bans`: create temporary IP bans through AS.
+- `Chat Records`: query traceable chat history through ChatServer.
+- `Audit Logs`: query and export AS/TGS/ChatServer audit logs through each server.
 - `Service Status`: check configured service endpoints and database paths.
 
-Operational note: role management, IP bans, and AS session invalidation write to
-the SQLite database paths configured in `settings.json`. In a four-host
-deployment, run the admin console on a machine that can access those database
-files, or replace those actions with remote AS/TGS admin APIs later.
+Operational note: the console uses the administrator password only for the
+normal Kerberos login. It then sends `AS_ADMIN_TOKEN_REQ` with the existing
+TGT and authenticator. AS returns a signed, time-limited `admin_token`; later
+AS/TGS admin requests carry only that token. ChatServer admin APIs continue to
+verify the Kerberos service ticket, request signature, and admin role.
 
 Before using it on an existing deployment, initialize or migrate the AS and
 ChatServer databases so the `admin` user and `mute_rules` table exist:
 
 ```powershell
 python -m database.init_db --role as
+python -m database.init_db --role tgs
 python -m database.init_db --role chat
 ```

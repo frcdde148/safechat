@@ -1,11 +1,11 @@
 """TGS server entry point."""
 
 from __future__ import annotations
-
-import json
 import uuid
 
 from common.config.settings import server_bind_address
+from common.protocol.admin_token import verify_admin_token
+from server.simple_tcp_server import serve
 from server.tgs_server.core import TicketGrantingServer
 
 # Initialize Ticket Granting Server instance
@@ -16,6 +16,9 @@ PROTOCOL_VERSION = "safechat-kerberos-v4-ext"
 
 def handle_message(message: dict, address: tuple[str, int]) -> dict:
     """Handle Client -> TGS service-ticket requests and return response dict."""
+    if message["type"].startswith("TGS_ADMIN_"):
+        return _handle_admin_message(message, address)
+
     # Validate message type
     if message["type"] != "C_TGS_REQ":
         return {
@@ -68,11 +71,14 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         "version": PROTOCOL_VERSION,
         "request_id": str(uuid.uuid4()),
     }
-    
+    return _envelope(message, "TGS_C_REP", response_body)
+
+
+def _envelope(message: dict, response_type: str, body: dict) -> dict:
     return {
-        "type": "TGS_C_REP",
+        "type": response_type,
         "seq": message["seq"],
-        "body": response_body,
+        "body": body,
         "sid": message.get("sid", ""),
         "v": 1,
         "ts": message.get("ts", 0),
@@ -83,52 +89,49 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     }
 
 
+def _admin_error(message: dict, error: str) -> dict:
+    return _envelope(message, "ERROR", {"error": error})
+
+
+def _require_admin(message: dict) -> tuple[bool, str]:
+    body = message.get("body", {})
+    payload = verify_admin_token(body.get("admin_token", ""))
+    if not payload:
+        return False, ""
+    username = str(payload.get("username", ""))
+    user = tgs_server.dao.get_user(username)
+    return bool(user and user.get("role") == "admin"), username
+
+
+def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
+    ok, admin_user = _require_admin(message)
+    if not ok:
+        tgs_server.dao.add_audit_log("", admin_user or "unknown", address[0], "TGS_ADMIN_DENIED")
+        return _admin_error(message, "admin permission required")
+    body = message.get("body", {})
+    try:
+        if message["type"] == "TGS_ADMIN_AUDIT_QUERY":
+            action_filter = body.get("action_filter", "")
+            params = []
+            query = "SELECT id, timestamp, user_id, client_ip, action_type, content_enc, signature FROM audit_logs"
+            if action_filter:
+                query += " WHERE action_type LIKE ?"
+                params.append(f"%{action_filter}%")
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(int(body.get("limit", 300)))
+            with tgs_server.dao._connect() as conn:
+                rows = conn.execute(query, params).fetchall()
+                return _envelope(message, "TGS_ADMIN_ACK", {"audit_logs": [dict(row) for row in rows]})
+    except Exception as exc:
+        return _admin_error(message, str(exc))
+    return _admin_error(message, f"unknown TGS admin action: {message['type']}")
+
+
 def main() -> None:
     """Start the ticket granting server."""
     host, port = server_bind_address("tgs_server")
     print(f"Starting TGS server on {host}:{port}")
-    
-    # Custom serve function that handles dict messages
-    import socket
-    import struct
-    
-    def custom_serve(host: str, port: int, server_name: str, handler):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
-            sock.listen(5)
-            print(f"{server_name} listening on {host}:{port}")
-            
-            while True:
-                conn, addr = sock.accept()
-                with conn:
-                    try:
-                        # Read length
-                        length_data = conn.recv(4)
-                        if not length_data:
-                            continue
-                        length = struct.unpack('!I', length_data)[0]
-                        
-                        # Read message
-                        data = b''
-                        while len(data) < length:
-                            chunk = conn.recv(min(length - len(data), 4096))
-                            if not chunk:
-                                break
-                            data += chunk
-                        
-                        # Parse and handle
-                        message = json.loads(data.decode('utf-8'))
-                        response = handler(message, addr)
-                        
-                        # Send response
-                        response_json = json.dumps(response)
-                        conn.sendall(struct.pack('!I', len(response_json)))
-                        conn.sendall(response_json.encode('utf-8'))
-                    except Exception as e:
-                        print(f"Error handling connection: {e}")
-    
-    custom_serve(host, port, "TGS Server", handle_message)
+    serve(host, port, "TGS Server", handle_message)
 
 
 if __name__ == "__main__":

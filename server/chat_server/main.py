@@ -8,18 +8,14 @@ import time
 
 from common.config.settings import server_bind_address
 from common.crypto.des import decrypt_text, encrypt_text
-from common.crypto.rsa_sign import generate_key_pair, sign_text
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model
 from common.protocol.message import Message
-from common.protocol.security import body_digest, verify_body_signature
+from common.protocol.security import verify_body_signature
 from database.dao.sqlite_dao import SQLiteDAO
 from server.simple_tcp_server import serve
 
 
 CHAT_SERVICE = "chat_server"
-
-# RSA key pair for signing responses
-_private_key, _public_key = generate_key_pair()
 
 dao = SQLiteDAO(role="chat")
 online_lock = threading.Lock()
@@ -27,18 +23,6 @@ online_users: dict[str, dict] = {}  # username -> {session_id, client_ip, last_s
 pubkey_lock = threading.Lock()
 session_pubkeys: dict[str, str] = {}
 ONLINE_TIMEOUT_MS = 30_000
-
-
-def _sign_response(response_body: dict) -> tuple[str, str]:
-    """Sign response body with RSA."""
-    digest = body_digest(response_body)
-    signature = sign_text(digest, _private_key)
-    return digest, signature
-
-
-def _get_public_key() -> str:
-    """Return the ChatServer's public key."""
-    return _public_key
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> Message:
@@ -59,6 +43,12 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
         return _handle_admin_unmute_user(message, address)
     if message["type"] == "ADMIN_KICK_USER":
         return _handle_admin_kick_user(message, address)
+    if message["type"] == "CHAT_ADMIN_LIST_MESSAGES":
+        return _handle_chat_admin_list_messages(message, address)
+    if message["type"] == "CHAT_ADMIN_AUDIT_QUERY":
+        return _handle_chat_admin_audit_query(message, address)
+    if message["type"] == "CHAT_ADMIN_SET_ROLE":
+        return _handle_chat_admin_set_role(message, address)
     return Message(
         type="ERROR",
         seq=message["seq"],
@@ -471,6 +461,76 @@ def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
     )
 
 
+def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) -> Message:
+    """Return chat messages for admin review."""
+    ticket = _decrypt_valid_service_ticket(message)
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+    body = message["body"]
+    chat_type = body.get("chat_type", "All")
+    user_filter = body.get("user_filter", "")
+    params: list = []
+    query = """
+        SELECT id, created_at, chat_type, session_key, sender, recipient, message_text, file_name
+        FROM chat_messages
+    """
+    clauses = []
+    if chat_type != "All":
+        clauses.append("chat_type = ?")
+        params.append(chat_type)
+    if user_filter:
+        clauses.append("(sender LIKE ? OR recipient LIKE ?)")
+        params.extend([f"%{user_filter}%", f"%{user_filter}%"])
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(int(body.get("limit", 200)))
+    with dao._connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+        messages = [dict(row) for row in rows]
+    dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_LIST_MESSAGES", content_enc=str(len(messages)))
+    return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"messages": messages})
+
+
+def _handle_chat_admin_audit_query(message: dict, address: tuple[str, int]) -> Message:
+    """Return ChatServer audit logs for admin review."""
+    ticket = _decrypt_valid_service_ticket(message)
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+    body = message["body"]
+    action_filter = body.get("action_filter", "")
+    params: list = []
+    query = "SELECT id, timestamp, user_id, client_ip, action_type, content_enc, signature FROM audit_logs"
+    if action_filter:
+        query += " WHERE action_type LIKE ?"
+        params.append(f"%{action_filter}%")
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(int(body.get("limit", 300)))
+    with dao._connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+        logs = [dict(row) for row in rows]
+    return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"audit_logs": logs})
+
+
+def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Message:
+    """Update ChatServer-local user role."""
+    ticket = _decrypt_valid_service_ticket(message)
+    _update_user_last_seen(ticket.client_id)
+    if not _verify_admin_request(message, ticket):
+        return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
+    target = message["body"].get("target_username", "")
+    role = message["body"].get("role", "user")
+    if role not in {"user", "admin"}:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "invalid role"})
+    with dao._connect() as conn:
+        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, target))
+        conn.commit()
+    dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_SET_ROLE", content_enc=json.dumps({"target": target, "role": role}, ensure_ascii=False))
+    return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"updated": target, "role": role})
+
+
 def _decrypt_valid_service_ticket(message: dict):
     chat = dao.get_service(CHAT_SERVICE)
     if not chat:
@@ -499,12 +559,6 @@ def _session_key(sender: str, chat_type: str, recipient: str) -> str:
         users = sorted([sender, recipient])
         return f"private:{users[0]}:{users[1]}"
     return "group:public"
-
-
-def _can_read_message(username: str, message: dict) -> bool:
-    if message["chat_type"] == "private":
-        return username in {message["sender"], message["recipient"]}
-    return True
 
 
 def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:

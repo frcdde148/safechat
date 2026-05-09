@@ -184,7 +184,7 @@ def init_database(path: Path, role: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         create_schema(conn)
-        if role in {"all", "as", "chat"}:
+        if role in {"all", "as", "tgs", "chat"}:
             seed_users(conn)
         seed_services(conn, role)
         conn.commit()

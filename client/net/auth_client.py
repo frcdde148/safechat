@@ -460,6 +460,59 @@ class AuthClient:
             },
         )
 
+    def request_admin_token(self) -> str:
+        """Request an AS-signed admin token using the existing TGT, not the password."""
+        if not self.tgt or not self.session_key_c_tgs:
+            raise ValueError("missing TGT; complete Kerberos authentication first")
+        authenticator = encrypt_model(issue_authenticator(self.username, ""), self.session_key_c_tgs)
+        message = Message(
+            type="AS_ADMIN_TOKEN_REQ",
+            seq=self._next_seq(),
+            body={
+                "ticket_tgt": self.tgt,
+                "authenticator": authenticator,
+            },
+        )
+        response = request(self.as_host, self.as_port, message, timeout=10.0)
+        self._raise_on_error(response)
+        token = response["body"].get("admin_token", "")
+        if not token:
+            raise RuntimeError("AS did not return admin token")
+        return token
+
+    def chat_admin_list_messages(self, chat_type: str = "All", user_filter: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        """Query chat messages through ChatServer admin API."""
+        body = self._send_admin_action(
+            "CHAT_ADMIN_LIST_MESSAGES",
+            {
+                "chat_type": chat_type,
+                "user_filter": user_filter,
+                "limit": limit,
+            },
+        )
+        return body.get("messages", [])
+
+    def chat_admin_audit_query(self, action_filter: str = "", limit: int = 300) -> list[dict[str, Any]]:
+        """Query ChatServer audit logs through ChatServer admin API."""
+        body = self._send_admin_action(
+            "CHAT_ADMIN_AUDIT_QUERY",
+            {
+                "action_filter": action_filter,
+                "limit": limit,
+            },
+        )
+        return body.get("audit_logs", [])
+
+    def chat_admin_set_role(self, target_username: str, role: str) -> dict[str, Any]:
+        """Set ChatServer-local user role through ChatServer admin API."""
+        return self._send_admin_action(
+            "CHAT_ADMIN_SET_ROLE",
+            {
+                "target_username": target_username,
+                "role": role,
+            },
+        )
+
     def _send_admin_action(self, action_type: str, body_fields: dict[str, Any]) -> dict[str, Any]:
         if not self.service_ticket or not self.session_key_c_v:
             raise ValueError("chat session is not authenticated")
