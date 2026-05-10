@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import sqlite3
 import time
@@ -10,6 +9,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from common.config.settings import database_path, service_address, service_key
+from common.crypto.sha256 import sha256_hex
 
 DB_PATH = database_path()
 ROLE_DB_PATHS = {
@@ -32,7 +32,7 @@ SEED_USERS = (
 def hash_password(password: str, salt_hex: str) -> str:
     """Return a SHA-256 salted password hash."""
     salt = bytes.fromhex(salt_hex)
-    return hashlib.sha256(salt + password.encode("utf-8")).hexdigest()
+    return sha256_hex(salt + password.encode("utf-8"))
 
 
 def create_schema(conn: sqlite3.Connection) -> None:

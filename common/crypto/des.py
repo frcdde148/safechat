@@ -10,9 +10,10 @@ DES-CBC is implemented from scratch following FIPS 46-3:
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 import struct
+
+from common.crypto.sha256 import sha256_bytes
 
 
 BLOCK_SIZE = 8  # bytes
@@ -264,7 +265,7 @@ def derive_des_key(secret: str | bytes) -> bytes:
     """Derive a DES-sized key from a text or binary secret."""
     if isinstance(secret, str):
         secret = secret.encode("utf-8")
-    return hashlib.sha256(secret).digest()[:BLOCK_SIZE]
+    return sha256_bytes(secret)[:BLOCK_SIZE]
 
 
 def encrypt_text(plaintext: str, secret: str | bytes) -> dict[str, str]:
