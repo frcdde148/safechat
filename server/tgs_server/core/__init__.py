@@ -7,8 +7,7 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
-from common.crypto.aes import encrypt_text
-from common.crypto.des import encrypt_text as des_encrypt
+from common.crypto.des import encrypt_text
 from common.crypto.rsa_sign import generate_key_pair, sign_text
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model, issue_ticket
 from common.protocol.security import body_digest
@@ -117,7 +116,7 @@ class TicketGrantingServer:
             encrypted_service_ticket = encrypt_model(service_ticket, chat_service["service_key"])
             
             # Encrypt session_key_c_v using Kc_tgs (session key from TGT)
-            encrypted_session_key = des_encrypt(session_key_c_v, tgt.session_key)
+            encrypted_session_key = encrypt_text(session_key_c_v, tgt.session_key)
             
             # Log successful ticket issuance
             self._log_audit("", tgt.client_id, client_addr, "TGS_TICKET_OK", 

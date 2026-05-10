@@ -30,9 +30,9 @@ class AuthClient:
         self.tgt: dict[str, str] | None = None
         self.service_ticket: dict[str, str] | None = None
         self.session_key_c_tgs = ""
-        self.encrypted_session_key_c_tgs: dict[str, str] | None = None  # 保存加密的 session_key
+        self.encrypted_session_key_c_tgs: dict[str, str] | None = None  # 保存加密的session_key
         self.session_key_c_v = ""
-        self.encrypted_session_key_c_v: dict[str, str] | None = None  # 保存加密的 session_key
+        self.encrypted_session_key_c_v: dict[str, str] | None = None  # 保存加密的session_key
         self.session_id = ""
         self.salt = ""
         self.client_key = ""
@@ -56,7 +56,7 @@ class AuthClient:
     def run_stage(self, stage_code: str) -> tuple[bool, str]:
         """Run one visible UI stage and return success plus display detail."""
         stage_handlers = {
-            "C_AS_REQ": self._request_tgt,
+            "C_AS_REQ": self._request_tgt,#映射。不用if else。
             "AS_C_REP": self._explain_as_response,
             "C_TGS_REQ": self._request_service_ticket,
             "TGS_C_REP": self._explain_tgs_response,

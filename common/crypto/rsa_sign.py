@@ -15,11 +15,12 @@ without modification.
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 import random
 import struct
 import textwrap
+
+from common.crypto.sha256 import sha256_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +348,7 @@ def sign_text(text: str, private_key_pem: str) -> str:
     """Sign text and return a Base64 RSA signature (PKCS#1 v1.5 + SHA-256)."""
     key = _private_key_from_pem(private_key_pem)
     k = (key["n"].bit_length() + 7) // 8
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    digest = sha256_bytes(text.encode("utf-8"))
     em = _pkcs1_v15_pad_sign(digest, k)
     m = int.from_bytes(em, "big")
     s = _rsa_private_op(m, key)
@@ -370,7 +371,7 @@ def verify_text(text: str, signature_b64: str, public_key_pem: str) -> bool:
         if digest_info[:prefix_len] != _SHA256_DIGEST_INFO_PREFIX:
             return False
         stored_digest = digest_info[prefix_len:]
-        expected_digest = hashlib.sha256(text.encode("utf-8")).digest()
+        expected_digest = sha256_bytes(text.encode("utf-8"))
         return stored_digest == expected_digest
     except Exception:
         return False

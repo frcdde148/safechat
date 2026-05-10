@@ -46,7 +46,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "password_hash": "sha256",
         "signature": "rsa-1024",
         "ticket_cipher": "des",
-        "audit_content_cipher": "aes",
+        "audit_content_cipher": "des",
         "admin_token_secret": "safechat-admin-token-secret",
     },
 }
