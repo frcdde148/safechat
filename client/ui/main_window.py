@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
         self._auth_payload: dict = {}
         self._auth_client: AuthClient | None = None
         self._image_send_threads: list[QThread] = []
+        self._visible_message_ids: set[tuple[str, int]] = set()
         self._is_relogin = False
         self._stage_timer = QTimer(self)
         self._stage_timer.setInterval(1100)
@@ -181,6 +182,9 @@ class MainWindow(QMainWindow):
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
             ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
+            message_id = int(result.get("message_id", 0))
+            if message_id:
+                self._visible_message_ids.add((self._view_session_key(session["chat_type"], session["recipient"]), message_id))
 
             self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
             ack = result.get("ack", "")
@@ -286,6 +290,7 @@ class MainWindow(QMainWindow):
 
     def _switch_chat_session(self) -> None:
         self.chat_view.clear_messages()
+        self._visible_message_ids.clear()
         session = self.chat_view.current_session()
         self.chat_view.session_type_status.set_value(session["title"], "okBadge")
         self.chat_view.add_message(f"系统通知：已切换到 {session['title']}", "system")
@@ -309,9 +314,19 @@ class MainWindow(QMainWindow):
             return
         from datetime import datetime
         for message in messages:
+            message_id = int(message.get("id", 0) or 0)
+            session_key = self._view_session_key(
+                message.get("chat_type", "group"),
+                message.get("recipient", ""),
+            )
+            visible_key = (session_key, message_id)
+            if message_id and visible_key in self._visible_message_ids:
+                continue
             is_self = message["sender"] == self._auth_client.username
             if is_self and not include_self:
                 continue
+            if message_id:
+                self._visible_message_ids.add(visible_key)
             kind = "self" if is_self else "peer"
             ciphertext = message.get("ciphertext", "")
             image_data = message.get("image_data", "")
@@ -329,6 +344,14 @@ class MainWindow(QMainWindow):
                     
             self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp)
 
+    def _view_session_key(self, chat_type: str = "group", recipient: str = "") -> str:
+        if not self._auth_client:
+            return "group:public"
+        if chat_type == "private":
+            users = sorted([self._auth_client.username, recipient])
+            return f"private:{users[0]}:{users[1]}"
+        return "group:public"
+
     def _open_private_chat(self, username: str) -> None:
         """Open a private chat with the selected contact."""
         if not self._auth_client:
@@ -342,6 +365,7 @@ class MainWindow(QMainWindow):
         
         # Clear messages and switch to private chat
         self.chat_view.clear_messages()
+        self._visible_message_ids.clear()
         self.chat_view.session_type_status.set_value(f"私聊 {username}", "okBadge")
         self.chat_view.add_message(f"系统通知：已切换到私聊 {username}", "system")
         
@@ -367,6 +391,7 @@ class MainWindow(QMainWindow):
         self.chat_view.set_current_session("group", "")
         
         self.chat_view.clear_messages()
+        self._visible_message_ids.clear()
         self.chat_view.session_type_status.set_value("群聊大厅", "okBadge")
         self.chat_view.add_message("系统通知：已切换到群聊大厅", "system")
         if not self._auth_client:
@@ -490,26 +515,36 @@ class MainWindow(QMainWindow):
                     self.error.emit(exc)
 
         def on_preview_ready(file_name, image_base64):
-            current = self.chat_view.current_session()
-            if current["chat_type"] != session["chat_type"] or current["recipient"] != session["recipient"]:
-                return
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.chat_view.add_message(
-                f"[图片] {file_name}（后台发送中）",
-                "self",
-                "",
-                image_base64,
-                file_name,
-                self._auth_client.username,
-                timestamp,
-            )
+            return
         
         def on_send_finished(result):
             try:
                 self.chat_view.set_upload_progress(80, "正在处理响应...")
                 
                 if result.get("success"):
+                    current = self.chat_view.current_session()
+                    message_id = int(result.get("message_id", 0) or 0)
+                    visible_key = (self._view_session_key(session["chat_type"], session["recipient"]), message_id)
+                    if (
+                        current["chat_type"] == session["chat_type"]
+                        and current["recipient"] == session["recipient"]
+                        and result.get("image_base64")
+                        and (not message_id or visible_key not in self._visible_message_ids)
+                    ):
+                        from datetime import datetime
+
+                        timestamp = datetime.now().strftime("%H:%M:%S")
+                        if message_id:
+                            self._visible_message_ids.add(visible_key)
+                        self.chat_view.add_message(
+                            f"[图片] {result.get('file_name')}",
+                            "self",
+                            "",
+                            result.get("image_base64", ""),
+                            result.get("file_name", ""),
+                            self._auth_client.username,
+                            timestamp,
+                        )
                     self.chat_view.set_upload_progress(100, "上传完成！")
                     self.chat_view.add_message(f"图片发送成功：{result.get('file_name')}", "system")
                     self.chat_view.security_status.set_value("图片已发送", "okBadge")

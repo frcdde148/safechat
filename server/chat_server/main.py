@@ -151,7 +151,9 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
             print(f"[DEBUG] Private chat check: chat_type={chat_type}, recipient={recipient}, online_users={list(online_users.keys())}, is_online={is_recipient_online}")
         
         if not is_recipient_online:
-            # Recipient is offline, store plaintext message
+            # Keep offline private messages in durable chat history so the
+            # sender and recipient both see them after switching sessions.
+            message_id = _append_chat_message(ticket.client_id, plaintext, chat_type, recipient)
             dao.store_offline_message(recipient, ticket.client_id, plaintext)
             ack_text = "已存储，待对方上线后推送"
             dao.add_audit_log(
@@ -168,7 +170,7 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
                     "sender": ticket.client_id,
                     "recipient": recipient,
                     "chat_type": chat_type,
-                    "message_id": 0,
+                    "message_id": message_id,
                     "ack_cipher": encrypt_text(ack_text, ticket.session_key),
                     "room": _session_key(ticket.client_id, chat_type, recipient),
                 },

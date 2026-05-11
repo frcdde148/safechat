@@ -309,6 +309,7 @@ class AuthClient:
         return {
             "success": True,
             "file_name": output_name,
+            "image_base64": image_base64,
             "message_id": message_id,
             "ack": plaintext_ack,
         }

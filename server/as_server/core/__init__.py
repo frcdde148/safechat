@@ -86,17 +86,6 @@ class AuthenticationServer:
         is_admin_console = message_body.get("client_type") == "admin_console" and user.get("role") == "admin"
 
         session_client_type = "admin_console" if is_admin_console else "client"
-        existing_session = self.dao.get_active_session(username, session_client_type)
-        if existing_session and not is_admin_console:
-            existing_ip = existing_session["client_ip"]
-            if existing_ip != client_addr:
-                self._log_audit("", username, client_addr, "LOGIN_DENIED_DUPLICATE", 
-                                f"User {username} already logged in from {existing_ip}")
-                return ASResponse(
-                    success=False, 
-                    error=f"user {username} is already logged in from {existing_ip}"
-                )
-        
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         if not tgs_service:
             return ASResponse(success=False, error="TGS service is not configured")
