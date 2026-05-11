@@ -434,6 +434,21 @@ class AuthClient:
         self._raise_on_error(response)
         return response["body"].get("users", [])
 
+    def heartbeat_as_session(self) -> None:
+        """Refresh the AS-side active session so duplicate-login checks are accurate."""
+        if not self.session_id:
+            return
+        message = Message(
+            type="AS_SESSION_HEARTBEAT",
+            seq=self._next_seq(),
+            body={
+                "username": self.username,
+                "session_id": self.session_id,
+            },
+        )
+        response = request(self.as_host, self.as_port, message, timeout=3.0)
+        self._raise_on_error(response)
+
     def admin_mute_user(self, target_username: str, duration_seconds: int = 600, reason: str = "admin mute") -> dict[str, Any]:
         """Ask ChatServer to mute one user. Server enforces admin permission."""
         return self._send_admin_action(

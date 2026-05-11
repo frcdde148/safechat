@@ -126,7 +126,7 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_signed_message_for_ticket(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "CHAT_SIGN_FAILED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "CHAT_SEND signature verification failed"})
@@ -220,7 +220,7 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
         if not _verify_signed_message_for_ticket(message, ticket):
             return Message(type="ERROR", seq=message["seq"], body={"error": "invalid signature"})
         
-        _update_user_last_seen(ticket.client_id)
+        _update_user_last_seen(ticket.client_id, address[0])
         mute_error = _mute_error(ticket.client_id)
         if mute_error:
             dao.add_audit_log("", ticket.client_id, address[0], "IMAGE_SEND_MUTED", content_enc=mute_error)
@@ -313,7 +313,7 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     last_seen_id = int(message["body"].get("last_seen_id", 0))
     chat_type = message["body"].get("chat_type", "group")
     recipient = message["body"].get("recipient", "")
@@ -354,7 +354,7 @@ def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     users = _current_contact_users()
     dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST", content_enc=str(len(users)))
     return Message(
@@ -373,7 +373,7 @@ def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_MUTE_DENIED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
@@ -423,7 +423,7 @@ def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Messag
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_UNMUTE_DENIED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
@@ -457,7 +457,7 @@ def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "ADMIN_KICK_DENIED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
@@ -496,7 +496,7 @@ def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) ->
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
     body = message["body"]
@@ -531,7 +531,7 @@ def _handle_chat_admin_audit_query(message: dict, address: tuple[str, int]) -> M
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
     body = message["body"]
@@ -555,7 +555,7 @@ def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Mess
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
     target = message["body"].get("target_username", "")
@@ -583,7 +583,7 @@ def _handle_chat_admin_delete_user(message: dict, address: tuple[str, int]) -> M
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
         return revoked
-    _update_user_last_seen(ticket.client_id)
+    _update_user_last_seen(ticket.client_id, address[0])
     if not _verify_admin_request(message, ticket):
         return Message(type="ERROR", seq=message["seq"], body={"error": "admin permission required"})
     target = message["body"].get("target_username", "").strip()
@@ -659,15 +659,25 @@ def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:
             "session_id": session_id,
             "client_ip": client_ip,
             "last_seen": int(time.time() * 1000),
-            "status": "在线",
+            "status": "online",
         }
 
 
-def _update_user_last_seen(username: str) -> None:
+def _update_user_last_seen(username: str, client_ip: str = "") -> None:
     """Update user's last seen timestamp to keep them online."""
     with online_lock:
         if username in online_users:
             online_users[username]["last_seen"] = int(time.time() * 1000)
+            if client_ip:
+                online_users[username]["client_ip"] = client_ip
+        else:
+            online_users[username] = {
+                "username": username,
+                "session_id": "",
+                "client_ip": client_ip,
+                "last_seen": int(time.time() * 1000),
+                "status": "online",
+            }
 
 
 def _current_online_users() -> list[dict]:
@@ -697,7 +707,7 @@ def _current_contact_users() -> list[dict]:
                 "session_id": "",
                 "client_ip": "",
                 "last_seen": 0,
-                "status": "离线",
+                "status": "offline",
             }
         contact["role"] = user.get("role", "user")
         mute_rule = dao.get_active_mute("user", username)
