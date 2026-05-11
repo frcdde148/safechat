@@ -1,4 +1,4 @@
-"""SQLite access helpers."""
+"""SQLite 访问工具。"""
 
 from __future__ import annotations
 
@@ -13,19 +13,19 @@ from common.crypto.sha256 import new_salt_hex, salted_password_hash, verify_pass
 
 
 class SQLiteDAO:
-    """Small DAO wrapper used by the demo authentication servers."""
+    """演示用认证服务器所使用的轻量级 DAO 封装。"""
 
     def __init__(self, db_path: Path | None = None, role: str = "default") -> None:
         self.db_path = db_path or database_path(role)
 
     def get_user(self, username: str) -> dict[str, Any] | None:
-        """Fetch one user by username."""
+        """根据用户名查询单个用户。"""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             return dict(row) if row else None
 
     def list_users(self) -> list[dict[str, Any]]:
-        """Return all known users for contact-list display."""
+        """返回所有已知用户列表，用于联系人展示。"""
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -45,7 +45,7 @@ class SQLiteDAO:
         reason: str = "",
         scope: str = "global",
     ) -> int:
-        """Create or replace an active mute rule for one user or IP."""
+        """创建或替换对指定用户或 IP 的有效禁言规则。"""
         now = int(time.time() * 1000)
         with self._connect() as conn:
             conn.execute(
@@ -68,7 +68,7 @@ class SQLiteDAO:
             return int(cursor.lastrowid)
 
     def revoke_mute_rule(self, target_type: str, target_value: str, scope: str = "global") -> int:
-        """Revoke active mute rules for one target and return affected row count."""
+        """撤销指定目标的有效禁言规则，返回受影响行数。"""
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -82,7 +82,7 @@ class SQLiteDAO:
             return int(cursor.rowcount)
 
     def get_active_mute(self, target_type: str, target_value: str, scope: str = "global") -> dict[str, Any] | None:
-        """Return an active, unexpired mute rule for one target."""
+        """返回指定目标的有效且未过期的禁言规则。"""
         now = int(time.time() * 1000)
         with self._connect() as conn:
             row = conn.execute(
@@ -101,7 +101,7 @@ class SQLiteDAO:
             return dict(row) if row else None
 
     def add_session_revocation(self, username: str, revoked_by: str, reason: str = "") -> int:
-        """Mark a user's current ChatServer session state as revoked."""
+        """将用户当前 ChatServer 会话状态标记为已撤销。"""
         now = int(time.time() * 1000)
         with self._connect() as conn:
             self._ensure_session_revocations_table(conn)
@@ -124,7 +124,7 @@ class SQLiteDAO:
             return int(cursor.lastrowid)
 
     def get_active_session_revocation(self, username: str) -> dict[str, Any] | None:
-        """Return the active session revocation for a user, if any."""
+        """返回用户当前有效的撤销记录（如果存在）。"""
         with self._connect() as conn:
             self._ensure_session_revocations_table(conn)
             row = conn.execute(
@@ -139,7 +139,7 @@ class SQLiteDAO:
             return dict(row) if row else None
 
     def clear_session_revocations(self, username: str) -> int:
-        """Clear active revocations after a fresh Kerberos service login."""
+        """用户重新登录 Kerberos 服务后清除有效撤销记录。"""
         with self._connect() as conn:
             self._ensure_session_revocations_table(conn)
             cursor = conn.execute(
@@ -154,14 +154,14 @@ class SQLiteDAO:
             return int(cursor.rowcount)
 
     def verify_user_password(self, username: str, password: str) -> bool:
-        """Return whether username/password matches the stored salted hash."""
+        """验证用户名/密码是否与已存储的加盐哈希匹配。"""
         user = self.get_user(username)
         if not user:
             return False
         return verify_password(password, user["salt"], user["password_hash"])
 
     def create_user(self, username: str, password: str, role: str = "user") -> None:
-        """Create one user with a salted password hash."""
+        """创建一个带加盐哈希密码的用户。"""
         now = int(time.time() * 1000)
         salt = new_salt_hex()
         password_hash = salted_password_hash(password, salt)
@@ -176,7 +176,7 @@ class SQLiteDAO:
             conn.commit()
 
     def update_user_password(self, username: str, password: str) -> bool:
-        """Replace one user's password hash and return whether a row changed."""
+        """更新用户密码哈希，返回是否有行受到影响。"""
         salt = new_salt_hex()
         password_hash = salted_password_hash(password, salt)
         with self._connect() as conn:
@@ -192,13 +192,13 @@ class SQLiteDAO:
             return int(cursor.rowcount) > 0
 
     def count_admin_users(self) -> int:
-        """Return number of users with admin role."""
+        """返回具有 admin 角色的用户数量。"""
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'admin'").fetchone()
             return int(row["total"] if row else 0)
 
     def delete_user(self, username: str) -> bool:
-        """Delete a user account while preserving audit and chat history."""
+        """删除用户账户，保留审计和聊天历史记录。"""
         with self._connect() as conn:
             self._ensure_session_revocations_table(conn)
             cursor = conn.execute("DELETE FROM users WHERE username = ?", (username,))
@@ -207,7 +207,7 @@ class SQLiteDAO:
             return int(cursor.rowcount) > 0
 
     def get_service(self, service_name: str) -> dict[str, Any] | None:
-        """Fetch one service record by logical service name."""
+        """根据逻辑服务名查询服务记录。"""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM services WHERE service_name = ?", (service_name,)).fetchone()
             return dict(row) if row else None
@@ -221,7 +221,7 @@ class SQLiteDAO:
         content_enc: str = "",
         signature: str = "",
     ) -> None:
-        """Persist an audit event."""
+        """写入审计事件。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -234,7 +234,7 @@ class SQLiteDAO:
             conn.commit()
 
     def is_ip_banned(self, ip_address: str) -> bool:
-        """Return whether an IP currently has an active ban."""
+        """判断指定 IP 地址当前是否处于有效封禁状态。"""
         now = int(time.time() * 1000)
         target_ip = self._normalize_ip(ip_address)
         with self._connect() as conn:
@@ -255,7 +255,7 @@ class SQLiteDAO:
             return False
 
     def get_active_session(self, username: str, client_type: str = "client") -> dict[str, Any] | None:
-        """Get the active session for a user and client type if exists."""
+        """按用户名和客户端类型查询当前有效会话（如存在）。"""
         now = int(time.time() * 1000)
         with self._connect() as conn:
             self._ensure_active_sessions_client_type(conn)
@@ -282,7 +282,7 @@ class SQLiteDAO:
         invalidate_existing: bool = True,
         client_type: str = "client",
     ) -> None:
-        """Create a new session, invalidating any existing sessions for the user."""
+        """创建新会话，并将该用户的已有会话标记为失效。"""
         with self._connect() as conn:
             self._ensure_active_sessions_client_type(conn)
             if invalidate_existing:
@@ -310,7 +310,7 @@ class SQLiteDAO:
         service_ticket_issued_at: int,
         service_ticket_expires_at: int,
     ) -> None:
-        """Update session with service ticket info."""
+        """更新会话的服务票据信息。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -323,7 +323,7 @@ class SQLiteDAO:
             conn.commit()
 
     def update_session_last_seen(self, session_id: str) -> None:
-        """Update last seen timestamp for a session."""
+        """更新会话的最后活动时间戳。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -336,7 +336,7 @@ class SQLiteDAO:
             conn.commit()
 
     def invalidate_session(self, session_id: str) -> None:
-        """Invalidate a session by session_id."""
+        """按 session_id 将会话标记为失效。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -349,7 +349,7 @@ class SQLiteDAO:
             conn.commit()
 
     def invalidate_user_sessions(self, username: str) -> None:
-        """Invalidate all sessions for a user."""
+        """将指定用户的所有会话标记为失效。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -362,7 +362,7 @@ class SQLiteDAO:
             conn.commit()
 
     def store_offline_message(self, recipient: str, sender: str, plaintext: str) -> None:
-        """Store a message for an offline user."""
+        """为离线用户存储一条消息。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -375,7 +375,7 @@ class SQLiteDAO:
             conn.commit()
 
     def get_offline_messages(self, recipient: str) -> list[dict[str, Any]]:
-        """Get all pending offline messages for a user, ordered by creation time."""
+        """按创建时间递层返回用户待受的所有离线消息。"""
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -388,7 +388,7 @@ class SQLiteDAO:
             return [dict(row) for row in rows]
 
     def delete_offline_message(self, message_id: int) -> None:
-        """Delete a specific offline message."""
+        """删除指定离线消息。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -400,7 +400,7 @@ class SQLiteDAO:
             conn.commit()
 
     def clear_offline_messages(self, recipient: str) -> None:
-        """Clear all offline messages for a user."""
+        """清除指定用户的所有离线消息。"""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -421,7 +421,7 @@ class SQLiteDAO:
         image_data: str = "",
         file_name: str = "",
     ) -> int:
-        """Persist one traceable chat message and return its database id."""
+        """持久化一条可追溯聊天消息，返回数据库 id。"""
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -444,7 +444,7 @@ class SQLiteDAO:
             return int(cursor.lastrowid)
 
     def list_chat_messages(self, session_key: str, after_id: int, username: str) -> list[dict[str, Any]]:
-        """List persisted messages in a session that the user is allowed to read."""
+        """按会话列出用户有权限读取的历史消息。"""
         with self._connect() as conn:
             rows = conn.execute(
                 """

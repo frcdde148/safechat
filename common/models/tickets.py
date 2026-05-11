@@ -1,4 +1,4 @@
-"""Shared data models such as tickets and authenticators."""
+"""共享数据模型，包括票据与认证子。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ DEFAULT_CLOCK_SKEW_MS = 5 * 60 * 1000
 
 @dataclass(slots=True)
 class Ticket:
-    """Kerberos-style encrypted service ticket payload."""
+    """Kerberos 风格的加密服务票据载荷。"""
 
     client_id: str
     client_addr: str
@@ -27,12 +27,12 @@ class Ticket:
     client_pubkey: str = ""
 
     def is_valid(self, now_ms: int | None = None, skew_ms: int = DEFAULT_CLOCK_SKEW_MS) -> bool:
-        """Return whether the ticket is inside its lifetime, allowing clock skew."""
+        """判断票据是否在有效期内（允许一定时钟偏差）。"""
         now_ms = now_ms or int(time.time() * 1000)
         return self.issued_at - skew_ms <= now_ms <= self.expires_at + skew_ms
 
     def validity_debug(self, now_ms: int | None = None) -> dict[str, int]:
-        """Return timestamps useful for diagnosing multi-host clock drift."""
+        """返回时间戳调试信息，用于诊断多主机时钟偏差。"""
         now_ms = now_ms or int(time.time() * 1000)
         return {
             "issued_at": self.issued_at,
@@ -44,7 +44,7 @@ class Ticket:
 
 @dataclass(slots=True)
 class Authenticator:
-    """Kerberos-style encrypted authenticator payload."""
+    """Kerberos 风格的加密认证子载荷。"""
 
     client_id: str
     client_addr: str
@@ -58,7 +58,7 @@ def issue_ticket(
     service_id: str,
     client_pubkey: str = "",
 ) -> Ticket:
-    """Create a ticket with the project default lifetime."""
+    """按项目默认有效期创建一个票据。"""
     now = int(time.time() * 1000)
     return Ticket(
         client_id=client_id,
@@ -72,23 +72,23 @@ def issue_ticket(
 
 
 def issue_authenticator(client_id: str, client_addr: str) -> Authenticator:
-    """Create an authenticator for the current timestamp."""
+    """创建带当前时间戳的认证子。"""
     return Authenticator(client_id=client_id, client_addr=client_addr, timestamp=int(time.time() * 1000))
 
 
 def encrypt_model(model: Ticket | Authenticator | dict[str, Any], secret: str) -> dict[str, str]:
-    """Encrypt a ticket/authenticator-compatible object with DES."""
+    """使用 DES 加密票据/认证子对象。"""
     payload = asdict(model) if not isinstance(model, dict) else model
     return encrypt_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), secret)
 
 
 def decrypt_ticket(encrypted: dict[str, str], secret: str) -> Ticket:
-    """Decrypt a ticket object."""
+    """解密一个票据对象。"""
     return Ticket(**_decrypt_dict(encrypted, secret))
 
 
 def decrypt_authenticator(encrypted: dict[str, str], secret: str) -> Authenticator:
-    """Decrypt an authenticator object."""
+    """解密一个认证子对象。"""
     return Authenticator(**_decrypt_dict(encrypted, secret))
 
 

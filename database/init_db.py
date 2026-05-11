@@ -1,4 +1,4 @@
-"""Initialize the SQLite database for SafeChat."""
+"""初始化 SafeChat SQLite 数据库。"""
 
 from __future__ import annotations
 
@@ -30,13 +30,13 @@ SEED_USERS = (
 
 
 def hash_password(password: str, salt_hex: str) -> str:
-    """Return a SHA-256 salted password hash."""
+    """返回 SHA-256 加盐密码哈希。"""
     salt = bytes.fromhex(salt_hex)
     return sha256_hex(salt + password.encode("utf-8"))
 
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Create SafeChat persistence tables."""
+    """创建 SafeChat 持久化表结构。"""
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -150,7 +150,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
 
 
 def seed_auth_users(conn: sqlite3.Connection) -> None:
-    """Seed course-demo users with salted SHA-256 hashes when missing."""
+    """当用户不存在时为课程演示用户添加 SHA-256 加盐哈希密码。"""
     now = int(time.time() * 1000)
     for username, password, user_role in SEED_USERS:
         salt = os.urandom(32).hex()
@@ -165,7 +165,7 @@ def seed_auth_users(conn: sqlite3.Connection) -> None:
 
 
 def seed_role_users(conn: sqlite3.Connection) -> None:
-    """Seed non-AS user role copies for contact lists when missing."""
+    """为联系人列表添加非 AS 用户角色副本（不存在时）。"""
     now = int(time.time() * 1000)
     for username, _password, user_role in SEED_USERS:
         conn.execute(
@@ -179,7 +179,7 @@ def seed_role_users(conn: sqlite3.Connection) -> None:
 
 
 def seed_services(conn: sqlite3.Connection, role: str = "all") -> None:
-    """Seed logical AS/TGS/ChatServer service records."""
+    """初始化 AS/TGS/ChatServer 逻辑服务记录。"""
     now = int(time.time() * 1000)
     tgs_host, tgs_port = service_address("tgs_server")
     chat_host, chat_port = service_address("chat_server")
@@ -204,7 +204,7 @@ def seed_services(conn: sqlite3.Connection, role: str = "all") -> None:
 
 
 def init_database(path: Path, role: str) -> None:
-    """Create and seed one role-specific SQLite database."""
+    """创建并初始化一个指定角色的 SQLite 数据库。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         create_schema(conn)
@@ -218,7 +218,7 @@ def init_database(path: Path, role: str) -> None:
 
 
 def ensure_database(role: str) -> Path:
-    """Ensure one service database is ready without resetting existing data."""
+    """在不重置现有数据的前提下确保指定服务数据库就绪。"""
     if role not in ROLE_DB_PATHS:
         raise ValueError(f"unknown database role: {role}")
     path = ROLE_DB_PATHS[role]
@@ -227,7 +227,7 @@ def ensure_database(role: str) -> Path:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Create role-specific tables and seed initial data."""
+    """创建各角色数据库表结构并添加初始数据。"""
     parser = ArgumentParser(description="Initialize SafeChat SQLite databases.")
     parser.add_argument(
         "--role",

@@ -1,4 +1,4 @@
-"""Protocol message types and security levels shared by clients and servers."""
+"""客户端与服务器共享的协议消息类型和安全等级定义。"""
 
 CONTROL_TYPES = {
     "HEARTBEAT",
