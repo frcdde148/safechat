@@ -38,7 +38,7 @@ AUTH_FLOW = ("C_AS_REQ", "AS_C_REP", "C_TGS_REQ", "TGS_C_REP", "C_V_REQ", "V_C_R
 
 
 class AdminConsole(QMainWindow):
-    """Standalone management console for users, sessions, audits, and chat moderation."""
+    """用于用户、会话、审计和聊天治理的独立管理控制台。"""
 
     def __init__(self) -> None:
         super().__init__()
