@@ -1,4 +1,4 @@
-"""Core authentication-server logic."""
+"""AS认证服务器核心逻辑"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from database.dao.sqlite_dao import SQLiteDAO
 
 @dataclass
 class ASResponse:
-    """AS server response structure."""
+    """AS服务器响应数据结构"""
     success: bool
     client_id: str = ""
     encrypted_session_key: dict[str, str] = field(default_factory=dict)
@@ -33,15 +33,15 @@ class ASResponse:
 
 class AuthenticationServer:
     """
-    Authentication Server (AS) - Kerberos V4 extended with digital signatures.
+    认证服务器(AS) - 基于Kerberos V4扩展数字签名版本
     
-    Responsibilities:
-    1. Locate the user's long-term key by username
-    2. Issue Ticket Granting Tickets (TGT)
-    3. Generate session keys (Kc,tgs)
-    4. Sign responses with RSA for non-repudiation
-    5. Maintain audit logs with encrypted content
-    6. Check IP ban status
+    职责:
+    1. 根据用户名查找用户的长期密钥
+    2. 签发票据授予票据(TGT)
+    3. 生成会话密钥(Kc,tgs)
+    4. 使用RSA签名响应以实现不可否认性
+    5. 维护加密的审计日志
+    6. 检查IP封禁状态
     """
     
     TGS_SERVICE = "tgs_server"
@@ -63,18 +63,18 @@ class AuthenticationServer:
         message_pubkey: str = "",
     ) -> ASResponse:
         """
-        Authenticate user and issue TGT.
+        用户认证并签发TGT票据
         
-        Args:
-            username: User's username
-            client_addr: Client IP address
-            message_body: Original message body for verification
-            message_hmac: HMAC digest from client
-            message_sig: RSA signature from client
-            message_pubkey: Client's public key
+        参数:
+            username: 用户用户名
+            client_addr: 客户端IP地址
+            message_body: 原始消息体用于验证
+            message_hmac: 客户端发送的HMAC摘要
+            message_sig: 客户端的RSA签名
+            message_pubkey: 客户端的公钥
             
-        Returns:
-            ASResponse containing TGT and encrypted session key on success
+        返回:
+            成功时返回包含TGT和加密会话密钥的ASResponse
         """
         if self.dao.is_ip_banned(client_addr):
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP banned")
@@ -145,27 +145,27 @@ class AuthenticationServer:
         )
     
     def _issue_tgt(self, client_id: str, client_addr: str, session_key: str) -> Ticket:
-        """Issue a Ticket Granting Ticket (TGT)."""
+        """签发票据授予票据(TGT)"""
         return issue_ticket(client_id, client_addr, session_key, self.TGS_SERVICE)
     
     def sign_response(self, response_body: dict[str, Any]) -> tuple[str, str]:
         """
-        Sign a response body with RSA.
+        使用RSA签名响应体
         
-        Returns:
-            Tuple of (digest, signature)
+        返回:
+            (摘要, 签名) 元组
         """
         digest = body_digest(response_body)
         signature = sign_text(digest, self._private_key)
         return digest, signature
     
     def get_public_key(self) -> str:
-        """Return the AS server's public key for verification."""
+        """返回AS服务器的公钥用于验证"""
         return self._public_key
     
     def _log_audit(self, session_id: str, user_id: str, client_ip: str, 
                    action_type: str, content: str) -> None:
-        """Log audit event with AES-encrypted content and RSA signature."""
+        """记录审计事件，内容使用AES加密并使用RSA签名"""
         encrypted_content = encrypt_text(content, self.AS_SECRET_KEY)
         content_digest = body_digest({"content": content, "action_type": action_type})
         content_signature = sign_text(content_digest, self._private_key)

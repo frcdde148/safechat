@@ -1,4 +1,4 @@
-"""TGS server entry point."""
+"""TGS票据授予服务器入口文件"""
 
 from __future__ import annotations
 import uuid
@@ -9,18 +9,18 @@ from database.init_db import ensure_database
 from server.simple_tcp_server import serve
 from server.tgs_server.core import TicketGrantingServer
 
-# Initialize Ticket Granting Server instance
+# 初始化票据授予服务器实例
 tgs_server = TicketGrantingServer()
 
 PROTOCOL_VERSION = "safechat-kerberos-v4-ext"
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> dict:
-    """Handle Client -> TGS service-ticket requests and return response dict."""
+    """处理客户端到TGS服务器的服务票据请求并返回响应"""
     if message["type"].startswith("TGS_ADMIN_"):
         return _handle_admin_message(message, address)
 
-    # Validate message type
+    # 验证消息类型
     if message["type"] != "C_TGS_REQ":
         return {
             "type": "ERROR",
@@ -35,7 +35,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
             "pubkey": "",
         }
     
-    # Extract request parameters
+    # 提取请求参数
     ticket_tgt = message["body"].get("ticket_tgt", {})
     authenticator = message["body"].get("authenticator", {})
     client_addr = address[0]
@@ -44,7 +44,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     message_sig = message.get("sig", "")
     message_pubkey = message.get("pubkey", "")
     
-    # Request service ticket
+    # 请求服务票据
     response = tgs_server.request_service_ticket(ticket_tgt, authenticator, client_addr, 
                                                  message_body, message_hmac, message_sig, message_pubkey)
     
@@ -62,7 +62,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
             "pubkey": "",
         }
     
-    # Build response body with ALL required fields
+    # 构建包含所有必需字段的响应体
     response_body = {
         "client_id": response.client_id,
         "encrypted_session_key": response.encrypted_session_key,
@@ -128,7 +128,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
 
 
 def main() -> None:
-    """Start the ticket granting server."""
+    """启动票据授予服务器"""
     db_path = ensure_database("tgs")
     host, port = server_bind_address("tgs_server")
     public_host, public_port = service_address("tgs_server")

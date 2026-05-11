@@ -1,4 +1,4 @@
-"""Reusable threaded TCP server for SafeChat services."""
+"""SafeChat服务的可复用线程TCP服务器"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ Handler = Callable[[dict, tuple[str, int]], Message | dict[str, Any]]
 
 
 def serve(host: str, port: int, service_name: str, handler: Handler) -> None:
-    """Serve one request per TCP connection using the SafeChat framing protocol."""
+    """使用SafeChat帧协议在每个TCP连接上处理一个请求"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((host, port))
@@ -31,6 +31,7 @@ def serve(host: str, port: int, service_name: str, handler: Handler) -> None:
 
 
 def _handle_client(sock: socket.socket, address: tuple[str, int], handler: Handler) -> None:
+    """处理单个客户端连接"""
     with sock:
         try:
             request = recv_message(sock)
