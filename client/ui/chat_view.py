@@ -1,4 +1,4 @@
-"""Main chat screen."""
+"""主聊天窗口"""
 
 from __future__ import annotations
 
@@ -24,7 +24,10 @@ from PyQt5.QtWidgets import (
 
 
 class MessageBubble(QFrame):
-    """Chat bubble for self, peer, system, and security messages with avatar and username."""
+    """聊天气泡视图，用于显示自发消息、他人消息、系统和安全提示消息。
+
+    包含头像、用户名、消息内容（文本或图片）、时间戳以及可切换的密文/明文显示。
+    """
 
     def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -38,35 +41,35 @@ class MessageBubble(QFrame):
         self.show_cipher = False
         self.timestamp = timestamp
         
-        # Main layout
+        # 主布局
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
 
-        # Create avatar
+        # 创建头像控件
         self.avatar_label = QLabel()
         self.avatar_label.setFixedSize(40, 40)
         self.avatar_label.setAlignment(Qt.AlignCenter)
         self.avatar_label.setText(self._avatar_initial(username))
         self.avatar_label.setStyleSheet(self._avatar_style(username))
         
-        # Create content widget (username + message + time)
+        # 创建内容容器（包含用户名、消息内容和时间）
         self.content_widget = QWidget()
         content_layout = QVBoxLayout(self.content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(2)
         
-        # Username label
+        # 用户名标签
         self.username_label = QLabel(username)
         self.username_label.setStyleSheet("font-size: 24px; color: #374151; font-weight: 600;")
         
-        # Timestamp label
+        # 时间戳标签
         self.timestamp_label = QLabel(self.timestamp)
         self.timestamp_label.setStyleSheet("font-size: 11px; color: #9ca3af;")
         
-        # Message content
+        # 消息内容（图片或文本）
         if image_data:
-            # Show image (clickable)
+            # 显示图片（可点击查看大图）
             self.full_image_data = image_data
             self.message_label = QLabel()
             pixmap = QPixmap()
@@ -80,15 +83,15 @@ class MessageBubble(QFrame):
             self.message_label.setCursor(Qt.PointingHandCursor)
             self.message_label.mousePressEvent = lambda e: self._show_full_image()
         else:
-            # Show text
+            # 显示文本消息
             self.message_label = QLabel(text)
             self.message_label.setWordWrap(True)
             self.message_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.full_image_data = ""
 
-        # Build layout based on message type
+        # 根据消息类型构建布局（本人/系统/安全/他人）
         if kind == "self":
-            # Self message: avatar on right, content on left
+            # 本人消息：头像在右侧，消息内容在左侧
             self.message_label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a", is_self=True))
             self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             
@@ -107,7 +110,7 @@ class MessageBubble(QFrame):
             layout.addWidget(self.avatar_label, 0)
             self.username_label.hide()
         elif kind == "system":
-            # System message: centered, no avatar
+            # 系统消息：居中显示，无头像
             self.message_label.setAlignment(Qt.AlignCenter)
             self.message_label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280", is_system=True))
             layout.addStretch(1)
@@ -117,7 +120,7 @@ class MessageBubble(QFrame):
             self.username_label.hide()
             self.timestamp_label.hide()
         elif kind == "security":
-            # Security message: full width, no avatar
+            # 安全提示：占满宽度，无头像
             self.message_label.setStyleSheet(self._bubble_style("#fffbeb", "#92400e", is_system=True))
             self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             layout.addWidget(self.message_label, 1)
@@ -125,7 +128,7 @@ class MessageBubble(QFrame):
             self.username_label.hide()
             self.timestamp_label.hide()
         else:
-            # Peer message: avatar on left, content on right
+            # 他人消息：头像在左侧，消息内容在右侧
             self.message_label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937", is_self=False))
             self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             
@@ -165,7 +168,7 @@ class MessageBubble(QFrame):
             self.message_label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937", is_self=False))
 
     def _show_full_image(self) -> None:
-        """Show full-size image in a dialog when clicked."""
+        """点击图片时弹出对话框查看原始大图。"""
         from PyQt5.QtWidgets import QFileDialog, QDialog, QHBoxLayout, QVBoxLayout, QScrollArea, QLabel, QPushButton
         from PyQt5.QtGui import QPixmap
         
@@ -275,7 +278,10 @@ class MessageBubble(QFrame):
 
 
 class StatusLine(QWidget):
-    """Compact key-value status row."""
+    """紧凑的键值状态行组件。
+
+    用于在右侧面板显示简短状态项（例如：认证、连接、心跳等）。
+    """
 
     def __init__(self, name: str, value: str, badge: str = "mutedBadge") -> None:
         super().__init__()
@@ -298,7 +304,10 @@ class StatusLine(QWidget):
 
 
 class ChatView(QWidget):
-    """Three-column chat workspace."""
+    """三栏式聊天工作区视图。
+
+    左侧为用户与会话列表，中间为消息流与输入，右侧为状态信息与安全提示。
+    """
 
     message_send_requested = pyqtSignal(str)
     session_changed = pyqtSignal()
@@ -323,7 +332,7 @@ class ChatView(QWidget):
         self.message_bubbles: list[MessageBubble] = []
         self.is_admin_user = False
         
-        # Track current session
+        # 跟踪当前会话类型和接收者
         self.current_chat_type = "group"
         self.current_recipient = ""
 
@@ -408,7 +417,7 @@ class ChatView(QWidget):
         self.message_input.textChanged.connect(self._update_send_button_state)
         layout.addWidget(self.message_input)
 
-        # Upload progress bar
+        # 上传进度条与说明标签
         self.upload_progress = QProgressBar()
         self.upload_progress.setFixedHeight(16)
         self.upload_progress.setVisible(False)
@@ -430,7 +439,7 @@ class ChatView(QWidget):
         button_row.addWidget(self.send_button)
         layout.addLayout(button_row)
         
-        # Initialize send button state
+        # 初始化发送按钮状态
         self._update_send_button_state()
         return panel
 
@@ -471,7 +480,7 @@ class ChatView(QWidget):
         self._refresh_cipher_toggle_ui()
 
     def clear_messages(self) -> None:
-        """Remove all visible message bubbles."""
+        """移除界面上所有显示的消息气泡。"""
         while self.message_area.count() > 1:
             item = self.message_area.takeAt(0)
             widget = item.widget()
@@ -506,7 +515,7 @@ class ChatView(QWidget):
             self.toggle_cipher_button.setToolTip("当前无可切换的密文消息")
 
     def current_session(self) -> dict[str, str]:
-        """Return selected group/private chat routing data."""
+        """返回当前选中的会话路由信息（群聊或私聊）。"""
         if self.current_chat_type == "private" and self.current_recipient:
             return {
                 "chat_type": "private",
@@ -520,13 +529,16 @@ class ChatView(QWidget):
         }
     
     def set_current_session(self, chat_type: str, recipient: str) -> None:
-        """Set current session."""
+        """设置当前会话类型和接收者，并更新标题显示。"""
         self.current_chat_type = chat_type
         self.current_recipient = recipient
         self.chat_title_label.setText(f"私聊 {recipient}" if chat_type == "private" and recipient else "群聊大厅")
 
     def set_online_users(self, users: list[dict]) -> None:
-        """Replace the left-side online user list with server state."""
+        """用服务器返回的用户列表替换左侧在线用户视图。
+
+        函数会根据用户角色、在线状态和是否被禁言构建显示后缀，并在当前用户处禁用点击。
+        """
         self.user_list.clear()
         self.is_admin_user = False
         current_user = self.current_user_label.text()
@@ -586,7 +598,7 @@ class ChatView(QWidget):
         self.relogin_requested.emit()
 
     def _update_send_button_state(self) -> None:
-        """Update send button state based on input content."""
+        """根据输入内容更新发送按钮的可用/样式状态。"""
         has_text = bool(self.message_input.toPlainText().strip())
         current_enabled = self.send_button.isEnabled()
         
@@ -601,20 +613,20 @@ class ChatView(QWidget):
             self.send_button.style().polish(self.send_button)
 
     def show_upload_progress(self) -> None:
-        """Show upload progress bar."""
+        """显示上传进度条并初始化为准备状态。"""
         self.upload_progress.setVisible(True)
         self.upload_progress.setValue(0)
         self.upload_progress_label.setVisible(True)
         self.upload_progress_label.setText("正在准备上传...")
 
     def set_upload_progress(self, value: int, text: str = "") -> None:
-        """Set upload progress value (0-100) and optional status text."""
+        """设置上传进度值（0-100）及可选的状态文本显示。"""
         self.upload_progress.setValue(value)
         if text:
             self.upload_progress_label.setText(text)
 
     def hide_upload_progress(self) -> None:
-        """Hide upload progress bar."""
+        """隐藏上传进度条和说明标签。"""
         self.upload_progress.setVisible(False)
         self.upload_progress_label.setVisible(False)
 
