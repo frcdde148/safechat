@@ -1,4 +1,4 @@
-"""Length-prefixed JSON socket helpers."""
+"""带长度前缀的 JSON 套接字工具。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ MAX_MESSAGE_SIZE = 4 * 1024 * 1024
 
 
 def send_message(sock: socket.socket, message: Message | dict[str, Any]) -> None:
-    """Send a Message or validated message dict with a 4-byte length prefix."""
+    """发送一条消息，带 4 字节长度前缀。"""
     if isinstance(message, Message):
         payload = message.to_json().encode("utf-8")
     else:
@@ -23,7 +23,7 @@ def send_message(sock: socket.socket, message: Message | dict[str, Any]) -> None
 
 
 def recv_message(sock: socket.socket) -> dict[str, Any]:
-    """Receive one length-prefixed JSON protocol message."""
+    """接收一条带长度前缀的 JSON 协议消息。"""
     header = _recv_exact(sock, HEADER_SIZE)
     size = struct.unpack("!I", header)[0]
     if size <= 0 or size > MAX_MESSAGE_SIZE:
@@ -32,7 +32,7 @@ def recv_message(sock: socket.socket) -> dict[str, Any]:
 
 
 def request(host: str, port: int, message: Message, timeout: float = 5.0) -> dict[str, Any]:
-    """Open a short TCP connection, send one message, and receive one response."""
+    """建立短路 TCP 连接，发送一条消息并接收一条响应。"""
     with socket.create_connection((host, port), timeout=timeout) as sock:
         send_message(sock, message)
         return recv_message(sock)
@@ -43,6 +43,6 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
     while len(chunks) < size:
         chunk = sock.recv(size - len(chunks))
         if not chunk:
-            raise ConnectionError("socket closed before full message was received")
+            raise ConnectionError("套接字已关闭，未收到完整消息")
         chunks.extend(chunk)
     return bytes(chunks)

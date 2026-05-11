@@ -1,10 +1,10 @@
-"""DES encryption and decryption helpers — pure-Python implementation.
+"""DES 加密解密工具 — 纯 Python 实现。
 
-DES-CBC is implemented from scratch following FIPS 46-3:
-  - 64-bit block, 56-bit effective key (8 bytes with parity bits stripped)
-  - 16 rounds of Feistel network using the standard S-boxes and P-box
-  - PKCS#7 padding
-  - CBC mode with a random 8-byte IV
+按照 FIPS 46-3 从零实现 DES-CBC：
+  - 64 位分组，56 位有效密钥（8 字节，去掉奇偶校验位）
+  - 使用标准 S 盒和 P 置换的 16 轮 Feistel 网络
+  - PKCS#7 填充
+  - CBC 模式，使用随机 8 字节 IV
 """
 
 from __future__ import annotations
@@ -16,13 +16,13 @@ import struct
 from common.crypto.sha256 import sha256_bytes
 
 
-BLOCK_SIZE = 8  # bytes
+BLOCK_SIZE = 8  # 字节
 
 # ---------------------------------------------------------------------------
-# DES standard tables (indices are 1-based in the spec; stored 0-based here)
+# DES 标准置换表（规范中下标从 1 开始，此处存储时改为从 0 开始）
 # ---------------------------------------------------------------------------
 
-# Initial Permutation (IP)
+# 初始置换（IP）
 _IP = [
     58, 50, 42, 34, 26, 18, 10, 2,
     60, 52, 44, 36, 28, 20, 12, 4,
@@ -34,7 +34,7 @@ _IP = [
     63, 55, 47, 39, 31, 23, 15, 7,
 ]
 
-# Final Permutation (IP^-1)
+# 末置换（IP 逆，FP）
 _FP = [
     40,  8, 48, 16, 56, 24, 64, 32,
     39,  7, 47, 15, 55, 23, 63, 31,
@@ -46,7 +46,7 @@ _FP = [
     33,  1, 41,  9, 49, 17, 57, 25,
 ]
 
-# Expansion table E (32 -> 48 bits)
+# 扩展置换 E（32 位 → 48 位）
 _E = [
     32,  1,  2,  3,  4,  5,
      4,  5,  6,  7,  8,  9,
@@ -58,7 +58,7 @@ _E = [
     28, 29, 30, 31, 32,  1,
 ]
 
-# Permutation P (32 bits)
+# P 置换（32 位）
 _P = [
     16,  7, 20, 21, 29, 12, 28, 17,
      1, 15, 23, 26,  5, 18, 31, 10,
@@ -66,7 +66,7 @@ _P = [
     19, 13, 30,  6, 22, 11,  4, 25,
 ]
 
-# Permuted-Choice 1 (64 -> 56 bits, selects key bits)
+# 置换选择 1（64 位 → 56 位，选取密钥位）
 _PC1 = [
     57, 49, 41, 33, 25, 17,  9,
      1, 58, 50, 42, 34, 26, 18,
@@ -78,7 +78,7 @@ _PC1 = [
     21, 13,  5, 28, 20, 12,  4,
 ]
 
-# Permuted-Choice 2 (56 -> 48 bits, generates round keys)
+# 置换选择 2（56 位 → 48 位，生成轮密钥）
 _PC2 = [
     14, 17, 11, 24,  1,  5,
      3, 28, 15,  6, 21, 10,
@@ -90,10 +90,10 @@ _PC2 = [
     46, 42, 50, 36, 29, 32,
 ]
 
-# Number of left-shifts per round
+# 每轮左移位数
 _SHIFTS = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1]
 
-# S-boxes S1..S8  (each is 4 rows × 16 cols)
+# S 盒 S1..S8（每个 4 行 × 16 列）
 _SBOXES = [
     # S1
     [
@@ -154,11 +154,11 @@ _SBOXES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Bit-manipulation helpers
+# 位操作辅助函数
 # ---------------------------------------------------------------------------
 
 def _bytes_to_bits(data: bytes) -> list[int]:
-    """Convert bytes to a list of bits (MSB first)."""
+    """将字节序列转换为比特列表（高位在前）。"""
     bits: list[int] = []
     for byte in data:
         for i in range(7, -1, -1):
@@ -167,7 +167,7 @@ def _bytes_to_bits(data: bytes) -> list[int]:
 
 
 def _bits_to_bytes(bits: list[int]) -> bytes:
-    """Convert a list of bits (MSB first) back to bytes."""
+    """将比特列表（高位在前）转换回字节序列。"""
     result = bytearray()
     for i in range(0, len(bits), 8):
         byte = 0
@@ -178,12 +178,12 @@ def _bits_to_bytes(bits: list[int]) -> bytes:
 
 
 def _permute(bits: list[int], table: list[int]) -> list[int]:
-    """Apply a permutation table (1-based indices) to a bit list."""
+    """按置换表（下标从 1 开始）对比特列表做置换。"""
     return [bits[t - 1] for t in table]
 
 
 def _left_rotate(bits: list[int], n: int) -> list[int]:
-    """Left-rotate a bit list by n positions."""
+    """将比特列表循环左移 n 位。"""
     return bits[n:] + bits[:n]
 
 
@@ -192,11 +192,11 @@ def _xor(a: list[int], b: list[int]) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
-# Key schedule
+# 密钥扩展
 # ---------------------------------------------------------------------------
 
 def _generate_round_keys(key_bytes: bytes) -> list[list[int]]:
-    """Produce 16 × 48-bit round keys from an 8-byte DES key."""
+    """由 8 字节 DES 密钥生成 16 个 48 位轮密钥。"""
     key_bits = _bytes_to_bits(key_bytes)
     key56 = _permute(key_bits, _PC1)
     C, D = key56[:28], key56[28:]
@@ -209,12 +209,12 @@ def _generate_round_keys(key_bytes: bytes) -> list[list[int]]:
 
 
 # ---------------------------------------------------------------------------
-# Feistel function f(R, K)
+# Feistel 轮函数 f(R, K)
 # ---------------------------------------------------------------------------
 
 def _feistel(right: list[int], round_key: list[int]) -> list[int]:
-    expanded = _permute(right, _E)           # 32 -> 48 bits
-    xored = _xor(expanded, round_key)        # XOR with round key
+    expanded = _permute(right, _E)           # 32 位扩展为 48 位
+    xored = _xor(expanded, round_key)        # 与轮密钥异或
     sbox_out: list[int] = []
     for i in range(8):
         block = xored[i * 6:(i + 1) * 6]
@@ -227,7 +227,7 @@ def _feistel(right: list[int], round_key: list[int]) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
-# Single-block DES encrypt / decrypt
+# 单分组 DES 加密 / 解密
 # ---------------------------------------------------------------------------
 
 def _des_block(block: bytes, round_keys: list[list[int]], decrypt: bool = False) -> bytes:
@@ -240,7 +240,7 @@ def _des_block(block: bytes, round_keys: list[list[int]], decrypt: bool = False)
 
 
 # ---------------------------------------------------------------------------
-# PKCS#7 padding
+# PKCS#7 填充
 # ---------------------------------------------------------------------------
 
 def _pkcs7_pad(data: bytes, block_size: int) -> bytes:
@@ -258,18 +258,18 @@ def _pkcs7_unpad(data: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Public API  (interface identical to the original library-based version)
+# 公开 API（接口与原调库版本完全一致）
 # ---------------------------------------------------------------------------
 
 def derive_des_key(secret: str | bytes) -> bytes:
-    """Derive a DES-sized key from a text or binary secret."""
+    """从文本或二进制 secret 派生 DES 密钥（8 字节）。"""
     if isinstance(secret, str):
         secret = secret.encode("utf-8")
     return sha256_bytes(secret)[:BLOCK_SIZE]
 
 
 def encrypt_text(plaintext: str, secret: str | bytes) -> dict[str, str]:
-    """Encrypt UTF-8 text with DES-CBC (pure Python) and return Base64 fields."""
+    """使用 DES-CBC（纯 Python）加密 UTF-8 文本，返回 Base64 字段字典。"""
     key = derive_des_key(secret)
     iv = os.urandom(BLOCK_SIZE)
     round_keys = _generate_round_keys(key)
@@ -288,7 +288,7 @@ def encrypt_text(plaintext: str, secret: str | bytes) -> dict[str, str]:
 
 
 def decrypt_text(ciphertext_b64: str, iv_b64: str, secret: str | bytes) -> str:
-    """Decrypt Base64 DES-CBC fields (pure Python) into UTF-8 text."""
+    """使用 DES-CBC（纯 Python）将 Base64 密文字段解密为 UTF-8 文本。"""
     key = derive_des_key(secret)
     iv = base64.b64decode(iv_b64)
     ciphertext = base64.b64decode(ciphertext_b64)

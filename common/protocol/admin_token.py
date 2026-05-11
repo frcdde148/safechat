@@ -1,4 +1,4 @@
-"""Signed admin token helpers for cross-server management APIs."""
+"""跨服务器管理 API 的带签名管理员令牌工具。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from common.crypto.sha256 import hmac_sha256, hmac_compare_digest
 
 
 def issue_admin_token(username: str, lifetime_seconds: int = 3600) -> str:
-    """Return a signed, time-limited admin token."""
+    """当前用户签发一个带时间限制的管理员令牌。"""
     payload = {
         "username": username,
         "expires_at": int(time.time() * 1000) + lifetime_seconds * 1000,
@@ -23,7 +23,7 @@ def issue_admin_token(username: str, lifetime_seconds: int = 3600) -> str:
 
 
 def verify_admin_token(token: str) -> dict[str, Any] | None:
-    """Return token payload if signature and expiry are valid."""
+    """如果签名有效且未过期，返回令牌载荷；否则返回 None。"""
     try:
         payload_b64, signature = token.split(".", 1)
     except ValueError:

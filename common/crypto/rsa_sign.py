@@ -1,15 +1,13 @@
-"""RSA-1024 signing and verification helpers — pure-Python implementation.
+"""RSA-1024 签名与验证工具 — 纯 Python 实现。
 
-RSA key generation, PKCS#1 v1.5 signing and verification are implemented
-from scratch:
-  - Miller-Rabin primality test for key generation
-  - Standard modular exponentiation (square-and-multiply)
-  - PKCS#1 v1.5 signature scheme (RSASSA-PKCS1-v1_5) with SHA-256 digest
-  - PEM / DER encoding using ASN.1 structures built by hand
+RSA 密钥生成、PKCS#1 v1.5 签名与验证均从零实现：
+  - Miller-Rabin 素数测试（用于密钥生成）
+  - 模幂快速幂（平方乘法）
+  - PKCS#1 v1.5 签名方案（RSASSA-PKCS1-v1_5）配合 SHA-256 摘要
+  - 手工构建 ASN.1 结构实现 PEM / DER 编码
 
-Public API is identical to the original library-based version so all
-callers (common/protocol/security.py, client/net/auth_client.py) work
-without modification.
+公开 API 与原调库版本完全一致，调用方（common/protocol/security.py、client/net/auth_client.py）
+无需任何修改。
 """
 
 from __future__ import annotations
@@ -24,21 +22,21 @@ from common.crypto.sha256 import sha256_bytes
 
 
 # ---------------------------------------------------------------------------
-# ASN.1 / DER helpers (minimal subset needed for RSA PEM)
+# ASN.1 / DER 辅助函数（RSA PEM 所需的最小子集）
 # ---------------------------------------------------------------------------
-# DigestInfo prefix for SHA-256 (RFC 3447 §9.2, Note 1)
+# SHA-256 DigestInfo 前缀（RFC 3447 §9.2 注 1）
 _SHA256_DIGEST_INFO_PREFIX = bytes([
-    0x30, 0x31,              # SEQUENCE { (49 bytes)
-    0x30, 0x0d,              #   SEQUENCE { (13 bytes)
-    0x06, 0x09,              #     OID (9 bytes)
+    0x30, 0x31,              # SEQUENCE {（49 字节）
+    0x30, 0x0d,              #   SEQUENCE {（13 字节）
+    0x06, 0x09,              #     OID（9 字节）
     0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,  # sha-256
     0x05, 0x00,              #     NULL
-    0x04, 0x20,              #   OCTET STRING (32 bytes)
+    0x04, 0x20,              #   OCTET STRING（32 字节）
 ])
 
 
 def _der_length(n: int) -> bytes:
-    """Encode DER length field."""
+    """编码 DER 长度字段。"""
     if n < 0x80:
         return bytes([n])
     raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
@@ -55,15 +53,15 @@ def _der_sequence(*items: bytes) -> bytes:
 
 
 def _der_integer(n: int) -> bytes:
-    """Encode a non-negative integer as DER INTEGER."""
+    """将非负整数编码为 DER INTEGER。"""
     raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n > 0 else b"\x00"
-    if raw[0] & 0x80:          # prepend 0x00 to keep sign bit clear
+    if raw[0] & 0x80:          # 首字节高位为 1 时补 0x00（保持符号位为正）
         raw = b"\x00" + raw
     return _der_tlv(0x02, raw)
 
 
 def _der_bit_string(data: bytes) -> bytes:
-    """Encode bytes as DER BIT STRING (0 unused bits)."""
+    """将字节序列编码为 DER BIT STRING（0 个未使用位）。"""
     return _der_tlv(0x03, b"\x00" + data)
 
 
@@ -91,11 +89,11 @@ def _pem_decode(pem: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# DER integer parsing (minimal, for reading back our own PEM output)
+# DER 整数解析（仅用于读回自身生成的 PEM）
 # ---------------------------------------------------------------------------
 
 def _parse_der_length(data: bytes, pos: int) -> tuple[int, int]:
-    """Return (length, new_pos)."""
+    """返回（长度, 新位置）。"""
     b = data[pos]; pos += 1
     if b < 0x80:
         return b, pos
@@ -120,11 +118,11 @@ def _parse_der_sequence_header(data: bytes, pos: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Number-theory helpers
+# 数论辅助函数
 # ---------------------------------------------------------------------------
 
 def _mod_pow(base: int, exp: int, mod: int) -> int:
-    """Fast modular exponentiation (square-and-multiply)."""
+    """模幂快速幂（平方乘法）。"""
     result = 1
     base %= mod
     while exp > 0:
@@ -136,7 +134,7 @@ def _mod_pow(base: int, exp: int, mod: int) -> int:
 
 
 def _miller_rabin(n: int, k: int = 20) -> bool:
-    """Miller-Rabin primality test; k rounds give error prob < 4^-k."""
+    """米勒-拉平素测试；k 轮得到的错误概率 < 4^-k。"""
     if n < 2:
         return False
     small_primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
@@ -144,7 +142,7 @@ def _miller_rabin(n: int, k: int = 20) -> bool:
         return True
     if any(n % p == 0 for p in small_primes):
         return False
-    # write n-1 as 2^r * d
+    # 将 n-1 写成 2^r * d 的形式
     r, d = 0, n - 1
     while d % 2 == 0:
         r += 1
@@ -164,15 +162,15 @@ def _miller_rabin(n: int, k: int = 20) -> bool:
 
 
 def _random_odd(bits: int) -> int:
-    """Return a random odd integer of exactly `bits` bits."""
+    """返回一个恰好为 bits 位的随机奇数。"""
     n = int.from_bytes(os.urandom(bits // 8), "big")
-    n |= (1 << (bits - 1))   # set MSB
-    n |= 1                    # set LSB (odd)
+    n |= (1 << (bits - 1))   # 设置最高位
+    n |= 1                    # 设置最低位（确保是奇数）
     return n
 
 
 def _gen_prime(bits: int) -> int:
-    """Generate a random prime of exactly `bits` bits."""
+    """生成一个恰好 bits 位的随机质数。"""
     while True:
         candidate = _random_odd(bits)
         if _miller_rabin(candidate):
@@ -180,7 +178,7 @@ def _gen_prime(bits: int) -> int:
 
 
 def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
-    """Return (gcd, x, y) such that a*x + b*y = gcd."""
+    """返回 (gcd, x, y)，满足 a*x + b*y = gcd。"""
     if a == 0:
         return b, 0, 1
     g, x, y = _extended_gcd(b % a, a)
@@ -195,11 +193,11 @@ def _mod_inverse(a: int, m: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# RSA key generation
+# RSA 密钥生成
 # ---------------------------------------------------------------------------
 
 def _generate_rsa_key(bits: int = 1024) -> dict[str, int]:
-    """Return a dict with RSA key components: n, e, d, p, q, dp, dq, qinv."""
+    """返回包含 RSA 密钥分量的字典：n, e, d, p, q, dp, dq, qinv。"""
     half = bits // 2
     e = 65537
     while True:
@@ -219,13 +217,13 @@ def _generate_rsa_key(bits: int = 1024) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# PEM serialisation (PKCS#1 format, compatible with most tooling)
+# PEM 序列化（PKCS#1 格式，与大多数工具兼容）
 # ---------------------------------------------------------------------------
 
 def _private_key_to_pem(key: dict[str, int]) -> str:
-    """Encode RSA private key as PKCS#1 PEM (RSAPrivateKey)."""
+    """将 RSA 私钥编码为 PKCS#1 PEM 格式（RSAPrivateKey）。"""
     der = _der_sequence(
-        _der_integer(0),           # version
+        _der_integer(0),           # 版本号
         _der_integer(key["n"]),
         _der_integer(key["e"]),
         _der_integer(key["d"]),
@@ -239,7 +237,7 @@ def _private_key_to_pem(key: dict[str, int]) -> str:
 
 
 def _public_key_to_pem(key: dict[str, int]) -> str:
-    """Encode RSA public key as PKCS#8/SubjectPublicKeyInfo PEM."""
+    """将 RSA 公钥编码为 PKCS#8/SubjectPublicKeyInfo PEM 格式。"""
     rsa_pub_der = _der_sequence(
         _der_integer(key["n"]),
         _der_integer(key["e"]),
@@ -252,7 +250,7 @@ def _public_key_to_pem(key: dict[str, int]) -> str:
 
 
 def _private_key_from_pem(pem: str) -> dict[str, int]:
-    """Parse PKCS#1 RSA private key PEM into a key dict."""
+    """将 PKCS#1 RSA 私钥 PEM 解析为密钥字典。"""
     der = _pem_decode(pem)
     pos = 0
     _, pos = _parse_der_sequence_header(der, pos)
@@ -269,19 +267,19 @@ def _private_key_from_pem(pem: str) -> dict[str, int]:
 
 
 def _public_key_from_pem(pem: str) -> dict[str, int]:
-    """Parse SubjectPublicKeyInfo RSA public key PEM into a key dict."""
+    """将 SubjectPublicKeyInfo RSA 公钥 PEM 解析为密钥字典。"""
     der = _pem_decode(pem)
     pos = 0
-    _, pos = _parse_der_sequence_header(der, pos)    # outer SEQUENCE
+    _, pos = _parse_der_sequence_header(der, pos)    # 外层 SEQUENCE
     _, pos = _parse_der_sequence_header(der, pos)    # AlgorithmIdentifier SEQUENCE
-    # skip OID + NULL inside AlgorithmIdentifier
+    # 跳过 AlgorithmIdentifier 内的 OID + NULL
     oid_len = der[pos + 1]; pos += 2 + oid_len       # OID TLV
     pos += 2                                          # NULL TLV
     # BIT STRING
     assert der[pos] == 0x03
     pos += 1
     bs_len, pos = _parse_der_length(der, pos)
-    pos += 1                                          # skip unused-bits byte (0x00)
+    pos += 1                                          # 跳过未使用位字节 (0x00)
     _, pos = _parse_der_sequence_header(der, pos)    # RSAPublicKey SEQUENCE
     n, pos = _parse_der_integer(der, pos)
     e, _ = _parse_der_integer(der, pos)
@@ -289,11 +287,11 @@ def _public_key_from_pem(pem: str) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# PKCS#1 v1.5 signature primitives
+# PKCS#1 v1.5 签名原语
 # ---------------------------------------------------------------------------
 
 def _pkcs1_v15_pad_sign(digest_bytes: bytes, k: int) -> bytes:
-    """Build PKCS#1 v1.5 signature EM block (type 1).
+    """构建 PKCS#1 v1.5 签名 EM 块（类型 1）。
 
     EM = 0x00 || 0x01 || PS || 0x00 || DigestInfo
     """
@@ -306,7 +304,7 @@ def _pkcs1_v15_pad_sign(digest_bytes: bytes, k: int) -> bytes:
 
 
 def _pkcs1_v15_verify_pad(em: bytes, k: int) -> bytes:
-    """Parse and validate PKCS#1 v1.5 type-1 EM block; return DigestInfo bytes."""
+    """解析并验证 PKCS#1 v1.5 类型 1 EM 块，返回 DigestInfo 字节。"""
     if len(em) != k or em[0] != 0x00 or em[1] != 0x01:
         raise ValueError("invalid PKCS#1 v1.5 signature block")
     i = 2
@@ -318,11 +316,11 @@ def _pkcs1_v15_verify_pad(em: bytes, k: int) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# CRT-based private key operation (fast signing)
+# 基于 CRT 的私钥操作（加速签名）
 # ---------------------------------------------------------------------------
 
 def _rsa_private_op(m: int, key: dict[str, int]) -> int:
-    """RSA private-key operation using CRT for speed."""
+    """使用 CRT 加速的 RSA 私钥操作。"""
     p, q, dp, dq, qinv = key["p"], key["q"], key["dp"], key["dq"], key["qinv"]
     mp = _mod_pow(m % p, dp, p)
     mq = _mod_pow(m % q, dq, q)
@@ -335,17 +333,17 @@ def _rsa_public_op(m: int, key: dict[str, int]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Public API  (interface identical to the original library-based version)
+# 公开 API（接口与原调库版本完全一致）
 # ---------------------------------------------------------------------------
 
 def generate_key_pair(bits: int = 1024) -> tuple[str, str]:
-    """Generate a PEM encoded RSA private/public key pair."""
+    """生成 PEM 编码的 RSA 私钥 / 公钥对。"""
     key = _generate_rsa_key(bits)
     return _private_key_to_pem(key), _public_key_to_pem(key)
 
 
 def sign_text(text: str, private_key_pem: str) -> str:
-    """Sign text and return a Base64 RSA signature (PKCS#1 v1.5 + SHA-256)."""
+    """对文本签名，返回 Base64 RSA 签名（PKCS#1 v1.5 + SHA-256）。"""
     key = _private_key_from_pem(private_key_pem)
     k = (key["n"].bit_length() + 7) // 8
     digest = sha256_bytes(text.encode("utf-8"))
@@ -356,7 +354,7 @@ def sign_text(text: str, private_key_pem: str) -> str:
 
 
 def verify_text(text: str, signature_b64: str, public_key_pem: str) -> bool:
-    """Verify a Base64 RSA PKCS#1 v1.5 signature against text."""
+    """验证文本的 Base64 RSA PKCS#1 v1.5 签名。"""
     try:
         key = _public_key_from_pem(public_key_pem)
         k = (key["n"].bit_length() + 7) // 8

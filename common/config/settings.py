@@ -1,4 +1,4 @@
-"""Configuration helpers shared by all programs."""
+"""所有程序共享的配置加载工具。"""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 def load_settings(path: Path | None = None) -> dict[str, Any]:
-    """Load settings.json with safe defaults for local development."""
+    """加载 settings.json，未配置时使用本地开发默认值。"""
     settings = deepcopy(DEFAULT_SETTINGS)
     config_path = path or SETTINGS_PATH
     if config_path.exists():
@@ -63,7 +63,7 @@ def load_settings(path: Path | None = None) -> dict[str, Any]:
 
 
 def database_path(role: str = "default") -> Path:
-    """Return the configured SQLite database path for a service role."""
+    """返回指定服务角色的 SQLite 数据库路径。"""
     database = load_settings()["database"]
     key = {
         "as": "as_path",
@@ -75,19 +75,19 @@ def database_path(role: str = "default") -> Path:
 
 
 def server_bind_address(section: str) -> tuple[str, int]:
-    """Return the configured bind host/port for a server section."""
+    """返回服务器配置的监听主机地址和端口。"""
     config = load_settings()[section]
     return str(config["bind_host"]), int(config["port"])
 
 
 def service_address(section: str) -> tuple[str, int]:
-    """Return the advertised service host/port stored in the service registry."""
+    """返回服务注册中存储的对外公告地址和端口。"""
     config = load_settings()[section]
     return str(config["public_host"]), int(config["port"])
 
 
 def service_key(section: str) -> str:
-    """Return a configured logical service key."""
+    """返回配置的逻辑服务密钥。"""
     return str(load_settings()[section]["service_key"])
 
 

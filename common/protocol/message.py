@@ -1,4 +1,4 @@
-"""Unified SafeChat JSON protocol envelope."""
+"""统一的 SafeChat JSON 协议封装。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ NONCE_BYTES = 8
 
 @dataclass(slots=True)
 class Message:
-    """SafeChat message envelope shared by all protocol layers."""
+    """SafeChat 各协议层共用的消息封装。"""
 
     type: str
     seq: int
@@ -32,27 +32,27 @@ class Message:
     pubkey: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-serializable dictionary."""
+        """返回可 JSON 序列化的字典。"""
         validate_message(asdict(self))
         return asdict(self)
 
     def to_json(self) -> str:
-        """Serialize the message using compact deterministic JSON."""
+        """将消息序列化为紧凑确定性 JSON 字符串。"""
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
 
 
 def encrypted_body(ciphertext_b64: str, iv_b64: str) -> dict[str, str]:
-    """Build the encrypted body shape used by data messages."""
+    """构建数据消息所用的加密体形式。"""
     return {"_cipher": ciphertext_b64, "_iv": iv_b64}
 
 
 def b64(data: bytes) -> str:
-    """Return Base64 text for binary protocol fields."""
+    """返回二进制协议字段的 Base64 编码。"""
     return base64.b64encode(data).decode("ascii")
 
 
 def from_json(raw: str | bytes) -> dict[str, Any]:
-    """Decode and validate a SafeChat JSON message."""
+    """解析并验证一条 SafeChat JSON 消息。"""
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
     message = json.loads(raw)
@@ -61,7 +61,7 @@ def from_json(raw: str | bytes) -> dict[str, Any]:
 
 
 def validate_message(message: dict[str, Any]) -> None:
-    """Validate the common envelope fields before routing."""
+    """路由前验证公共封装字段。"""
     required = {"v", "type", "seq", "sid", "ts", "nonce", "body", "hmac", "sig", "pubkey"}
     missing = required - message.keys()
     if missing:
