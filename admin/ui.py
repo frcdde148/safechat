@@ -222,6 +222,8 @@ class AdminConsole(QMainWindow):
         self.ban_reason_input = QLineEdit("管理员封禁")
         self.add_ip_ban_button = QPushButton("封禁 IP")
         self.add_ip_ban_button.clicked.connect(self.add_ip_ban)
+        self.remove_ip_ban_button = QPushButton("解封选中 IP")
+        self.remove_ip_ban_button.clicked.connect(self.remove_selected_ip_ban)
         self.refresh_ip_bans_button = QPushButton("刷新 IP 封禁")
         self.refresh_ip_bans_button.clicked.connect(self.refresh_ip_bans)
         actions.addWidget(QLabel("IP"))
@@ -231,6 +233,7 @@ class AdminConsole(QMainWindow):
         actions.addWidget(QLabel("原因"))
         actions.addWidget(self.ban_reason_input, 1)
         actions.addWidget(self.add_ip_ban_button)
+        actions.addWidget(self.remove_ip_ban_button)
         actions.addWidget(self.refresh_ip_bans_button)
         layout.addLayout(actions)
 
@@ -565,10 +568,10 @@ class AdminConsole(QMainWindow):
 
     def refresh_ip_bans(self) -> None:
         rows = self._as_admin_request("AS_ADMIN_LIST_IP_BANS").get("ip_bans", [])
-        now = int(time.time())
         self.ip_bans_table.setRowCount(0)
         for item in rows:
-            expires = int(item["created_at"]) + int(item["ban_time"])
+            created_at = int(item.get("created_at", 0) or 0)
+            expires = int(item.get("expires_at", 0) or 0)
             row = self.ip_bans_table.rowCount()
             self.ip_bans_table.insertRow(row)
             self._set_row(
@@ -578,11 +581,25 @@ class AdminConsole(QMainWindow):
                     item["id"],
                     item["ip_address"],
                     item["reason"],
-                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(item["created_at"]))),
-                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires)),
-                    "是" if expires >= now else "否",
+                    self._format_ts(created_at),
+                    self._format_ts(expires),
+                    "是" if item.get("active") else "否",
                 ],
             )
+
+    def remove_selected_ip_ban(self) -> None:
+        selected = self.ip_bans_table.selectedItems()
+        if not selected:
+            QMessageBox.information(self, "请选择 IP", "请先选择一条 IP 封禁记录。")
+            return
+        row = selected[0].row()
+        item = self.ip_bans_table.item(row, 1)
+        ip = item.text().strip() if item else ""
+        if not ip:
+            return
+        self._as_admin_request("AS_ADMIN_UNBAN_IP", {"ip_address": ip})
+        self.refresh_ip_bans()
+        self.refresh_audit_logs()
 
     def refresh_chat_records(self) -> None:
         chat_type = self.chat_type_filter.currentData()
@@ -710,6 +727,7 @@ class AdminConsole(QMainWindow):
             "reset_password_button",
             "delete_user_button",
             "add_ip_ban_button",
+            "remove_ip_ban_button",
             "refresh_roles_button",
             "refresh_sessions_button",
             "refresh_ip_bans_button",
@@ -826,6 +844,7 @@ class AdminConsole(QMainWindow):
             "AS_ADMIN_RESET_PASSWORD": "AS 重置用户密码",
             "AS_ADMIN_INVALIDATE_USER": "AS 使用户会话失效",
             "AS_ADMIN_BAN_IP": "AS 封禁 IP",
+            "AS_ADMIN_UNBAN_IP": "AS 解封 IP",
             "AS_ADMIN_TOKEN_DENIED": "管理员令牌申请被拒绝",
             "AS_ADMIN_TOKEN_OK": "管理员令牌签发成功",
             "TGS_ADMIN_DENIED": "TGS 管理权限不足",

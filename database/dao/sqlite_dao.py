@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import ipaddress
 from pathlib import Path
 from typing import Any
 
@@ -234,16 +235,24 @@ class SQLiteDAO:
 
     def is_ip_banned(self, ip_address: str) -> bool:
         """Return whether an IP currently has an active ban."""
-        now = int(time.time())
+        now = int(time.time() * 1000)
+        target_ip = self._normalize_ip(ip_address)
         with self._connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
                 SELECT * FROM ip_bans
-                WHERE ip_address = ? AND created_at + ban_time >= ?
                 """,
-                (ip_address, now),
-            ).fetchone()
-            return row is not None
+            ).fetchall()
+            for row in rows:
+                if self._normalize_ip(row["ip_address"]) != target_ip:
+                    continue
+                created_at = int(row["created_at"])
+                if created_at < 10_000_000_000:
+                    created_at *= 1000
+                ban_time_ms = int(row["ban_time"]) * 1000
+                if created_at + ban_time_ms >= now:
+                    return True
+            return False
 
     def get_active_session(self, username: str, client_type: str = "client") -> dict[str, Any] | None:
         """Get the active session for a user and client type if exists."""
@@ -320,7 +329,7 @@ class SQLiteDAO:
                 """
                 UPDATE active_sessions
                 SET last_seen = ?
-                WHERE session_id = ?
+                WHERE session_id = ? AND status = 'active'
                 """,
                 (int(time.time() * 1000), session_id),
             )
@@ -457,6 +466,17 @@ class SQLiteDAO:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    @staticmethod
+    def _normalize_ip(ip_address: str) -> str:
+        text = str(ip_address or "").strip()
+        try:
+            ip = ipaddress.ip_address(text)
+        except ValueError:
+            return text
+        if getattr(ip, "ipv4_mapped", None):
+            return str(ip.ipv4_mapped)
+        return str(ip)
 
     @staticmethod
     def _ensure_session_revocations_table(conn: sqlite3.Connection) -> None:

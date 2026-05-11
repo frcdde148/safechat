@@ -25,6 +25,9 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     if message["type"].startswith("AS_ADMIN_"):
         return _handle_admin_message(message, address)
 
+    if message["type"] == "AS_SESSION_HEARTBEAT":
+        return _handle_session_heartbeat(message, address)
+
     # Validate message type
     if message["type"] != "C_AS_REQ":
         return {
@@ -201,9 +204,11 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
             dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_INVALIDATE_USER", target)
             return _envelope(message, "AS_ADMIN_ACK", {"target_username": target})
         if action == "AS_ADMIN_BAN_IP":
-            ip = body.get("ip_address", "")
+            ip = dao._normalize_ip(body.get("ip_address", ""))
             reason = body.get("reason", "")
             ban_seconds = int(body.get("ban_seconds", 1800))
+            if ban_seconds <= 0:
+                return _admin_error(message, "ban_seconds must be positive")
             with dao._connect() as conn:
                 conn.execute(
                     """
@@ -214,17 +219,44 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
                         ban_time = excluded.ban_time,
                         created_at = excluded.created_at
                     """,
-                    (ip, reason, ban_seconds, int(time.time())),
+                    (ip, reason, ban_seconds, int(time.time() * 1000)),
                 )
                 conn.commit()
             dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_BAN_IP", json.dumps({"ip": ip, "seconds": ban_seconds}, ensure_ascii=False))
             return _envelope(message, "AS_ADMIN_ACK", {"ip_address": ip})
+        if action == "AS_ADMIN_UNBAN_IP":
+            ip = dao._normalize_ip(body.get("ip_address", ""))
+            if not ip:
+                return _admin_error(message, "ip_address is required")
+            with dao._connect() as conn:
+                rows = conn.execute("SELECT id, ip_address FROM ip_bans").fetchall()
+                ids = [int(row["id"]) for row in rows if dao._normalize_ip(row["ip_address"]) == ip]
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    cursor = conn.execute(f"DELETE FROM ip_bans WHERE id IN ({placeholders})", ids)
+                else:
+                    cursor = conn.execute("DELETE FROM ip_bans WHERE ip_address = ?", (ip,))
+                conn.commit()
+            dao.add_audit_log("", admin_user, address[0], "AS_ADMIN_UNBAN_IP", json.dumps({"ip": ip, "deleted": cursor.rowcount}, ensure_ascii=False))
+            return _envelope(message, "AS_ADMIN_ACK", {"ip_address": ip, "deleted": int(cursor.rowcount)})
         if action == "AS_ADMIN_LIST_IP_BANS":
             with dao._connect() as conn:
                 rows = conn.execute(
                     "SELECT id, ip_address, reason, ban_time, created_at FROM ip_bans ORDER BY id DESC LIMIT 200"
                 ).fetchall()
-                return _envelope(message, "AS_ADMIN_ACK", {"ip_bans": [dict(row) for row in rows]})
+                now_ms = int(time.time() * 1000)
+                bans = []
+                for row in rows:
+                    item = dict(row)
+                    created_at = int(item.get("created_at", 0) or 0)
+                    if created_at < 10_000_000_000:
+                        created_at *= 1000
+                    expires_at = created_at + int(item.get("ban_time", 0) or 0) * 1000
+                    item["created_at"] = created_at
+                    item["expires_at"] = expires_at
+                    item["active"] = expires_at >= now_ms
+                    bans.append(item)
+                return _envelope(message, "AS_ADMIN_ACK", {"ip_bans": bans})
         if action == "AS_ADMIN_AUDIT_QUERY":
             action_filter = body.get("action_filter", "")
             params = []
@@ -240,6 +272,21 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
     except Exception as exc:
         return _admin_error(message, str(exc))
     return _admin_error(message, f"unknown AS admin action: {action}")
+
+
+def _handle_session_heartbeat(message: dict, address: tuple[str, int]) -> dict:
+    body = message.get("body", {})
+    username = str(body.get("username", ""))
+    session_id = str(body.get("session_id", ""))
+    if not username or not session_id:
+        return _admin_error(message, "username and session_id are required")
+    session = as_server.dao.get_active_session(username, "client")
+    if not session or session.get("session_id") != session_id:
+        return _admin_error(message, "session is not active")
+    if as_server.dao._normalize_ip(session.get("client_ip", "")) != as_server.dao._normalize_ip(address[0]):
+        return _admin_error(message, "session address mismatch")
+    as_server.dao.update_session_last_seen(session_id)
+    return _envelope(message, "AS_SESSION_HEARTBEAT_ACK", {"ok": True})
 
 
 def _validate_user_fields(username: str, password: str, role: str) -> str:

@@ -206,6 +206,13 @@ class MainWindow(QMainWindow):
     def _poll_chat_messages(self) -> None:
         if not self._auth_client or self.stack.currentWidget() is not self.chat_view:
             return
+        try:
+            self._auth_client.heartbeat_as_session()
+        except Exception as exc:
+            if self._is_ticket_expired_error(exc) or "session is not active" in str(exc).lower():
+                self._mark_reauth_required(str(exc))
+                self._poll_timer.stop()
+                return
         
         if getattr(self, '_poll_thread', None) and self._poll_thread.isRunning():
             return

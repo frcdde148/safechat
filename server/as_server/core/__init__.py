@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,7 @@ class AuthenticationServer:
     TGS_SERVICE = "tgs_server"
     PROTOCOL_VERSION = "safechat-kerberos-v4-ext"
     AS_SECRET_KEY = "as-server-secret-key-for-audit-encryption"
+    SESSION_ACTIVITY_TIMEOUT_MS = 45_000
     
     def __init__(self, dao: SQLiteDAO | None = None) -> None:
         self.dao = dao or SQLiteDAO(role="as")
@@ -86,6 +88,26 @@ class AuthenticationServer:
         is_admin_console = message_body.get("client_type") == "admin_console" and user.get("role") == "admin"
 
         session_client_type = "admin_console" if is_admin_console else "client"
+        existing_session = self.dao.get_active_session(username, session_client_type)
+        if existing_session and not is_admin_console:
+            now_ms = int(time.time() * 1000)
+            existing_ip = existing_session["client_ip"]
+            existing_ip_norm = self.dao._normalize_ip(existing_ip)
+            client_ip_norm = self.dao._normalize_ip(client_addr)
+            last_seen = int(existing_session.get("last_seen", 0) or 0)
+            if existing_ip_norm != client_ip_norm and now_ms - last_seen <= self.SESSION_ACTIVITY_TIMEOUT_MS:
+                self._log_audit(
+                    "",
+                    username,
+                    client_addr,
+                    "LOGIN_DENIED_DUPLICATE",
+                    f"User {username} already logged in from {existing_ip}",
+                )
+                return ASResponse(
+                    success=False,
+                    error=f"user {username} is already logged in from {existing_ip}",
+                )
+            self.dao.invalidate_session(existing_session["session_id"])
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         if not tgs_service:
             return ASResponse(success=False, error="TGS service is not configured")

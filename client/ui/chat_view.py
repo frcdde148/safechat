@@ -534,7 +534,7 @@ class ChatView(QWidget):
             username = user.get("username", "")
             if not username:
                 continue
-            status = user.get("status", "离线")
+            status = {"online": "在线", "offline": "离线"}.get(user.get("status", "offline"), user.get("status", "离线"))
             role = user.get("role", "user")
             muted = bool(user.get("muted", False))
             client_ip = user.get("client_ip", "")
