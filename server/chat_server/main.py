@@ -1,4 +1,4 @@
-"""ChatServer entry point."""
+"""ChatServer聊天服务器入口文件"""
 
 from __future__ import annotations
 
@@ -16,18 +16,18 @@ from database.init_db import ensure_database
 from server.simple_tcp_server import serve
 
 
-CHAT_SERVICE = "chat_server"
+CHAT_SERVICE = "chat_server"  # 聊天服务标识
 
-dao = SQLiteDAO(role="chat")
-online_lock = threading.Lock()
-online_users: dict[str, dict] = {}  # username -> {session_id, client_ip, last_seen, status}
-pubkey_lock = threading.Lock()
-session_pubkeys: dict[str, str] = {}
-ONLINE_TIMEOUT_MS = 30_000
+dao = SQLiteDAO(role="chat")  # 数据库访问对象
+online_lock = threading.Lock()  # 在线用户列表线程锁（多用户同时在线安全）
+online_users: dict[str, dict] = {}  # 在线用户列表 {用户名: {session_id, client_ip, last_seen, status}}
+pubkey_lock = threading.Lock()  # 公钥绑定线程锁
+session_pubkeys: dict[str, str] = {}  # 用户公钥绑定
+ONLINE_TIMEOUT_MS = 30_000  # 30秒无心跳 → 离线
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> Message:
-    """Handle Client -> ChatServer auth and chat requests."""
+    """处理客户端到ChatServer的认证和聊天请求"""
     if message["type"] == "C_V_REQ":
         return _handle_mutual_auth(message, address)
     if message["type"] == "CHAT_SEND":
@@ -60,7 +60,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
-    """Handle Kerberos mutual authentication."""
+    """处理Kerberos双向认证（Kerberos第六步）"""
     chat = dao.get_service(CHAT_SERVICE)
     if not chat:
         return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
@@ -87,11 +87,11 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     _mark_user_online(ticket.client_id, session_id, address[0])
     dao.clear_session_revocations(ticket.client_id)
     
-    # Check for offline messages and push them
+    # 检查离线消息并推送
     offline_messages = dao.get_offline_messages(ticket.client_id)
     offline_messages_data = []
     for msg in offline_messages:
-        # Encrypt message with recipient's session key
+        # 用接收者的会话密钥加密消息
         message_cipher = encrypt_text(msg["message_text"], ticket.session_key)
         offline_messages_data.append({
             "id": msg["id"],
@@ -121,7 +121,7 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
-    """Decrypt one chat message and return an encrypted ACK."""
+    """解密聊天消息并返回加密的确认响应"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -201,7 +201,7 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
-    """Handle image send request."""
+    """处理图片发送请求"""
     try:
         chat = dao.get_service(CHAT_SERVICE)
         if not chat:
@@ -271,7 +271,7 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
-    """Verify digest/RSA signature and bind the first post-login public key to the user."""
+    """验证消息的摘要/RSA签名，并将首次登录后的公钥绑定到用户"""
     if not message.get("hmac") or not message.get("sig") or not message.get("pubkey"):
         return False
     pubkey_scope = f"{ticket.client_id}:{ticket.session_key}"
@@ -289,7 +289,7 @@ def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
 
 
 def _verify_admin_request(message: dict, ticket) -> bool:
-    """Verify request signature and require the sender to have admin role."""
+    """验证请求签名并要求发送者具有管理员角色"""
     if not _verify_signed_message_for_ticket(message, ticket):
         return False
     user = dao.get_user(ticket.client_id)
@@ -297,7 +297,7 @@ def _verify_admin_request(message: dict, ticket) -> bool:
 
 
 def _mute_error(username: str) -> str:
-    """Return an error string when a user is currently muted."""
+    """当用户被禁言时返回错误字符串"""
     rule = dao.get_active_mute("user", username)
     if not rule:
         return ""
@@ -308,7 +308,7 @@ def _mute_error(username: str) -> str:
 
 
 def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
-    """Return encrypted group-chat messages newer than last_seen_id."""
+    """返回比last_seen_id更新的加密群聊消息"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -349,7 +349,7 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
-    """Return the full contact list with online/offline state."""
+    """返回包含在线/离线状态的完整联系人列表"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -368,7 +368,7 @@ def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
-    """Mute one user after verifying the operator is an administrator."""
+    """验证操作者是管理员后禁言指定用户"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -418,7 +418,7 @@ def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Message:
-    """Revoke active user mute rules after administrator verification."""
+    """管理员验证通过后撤销用户的禁言规则"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -452,7 +452,7 @@ def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Messag
 
 
 def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
-    """Remove one user from ChatServer's in-memory online table."""
+    """从ChatServer的内存在线表中移除指定用户"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -491,7 +491,7 @@ def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) -> Message:
-    """Return chat messages for admin review."""
+    """返回聊天消息供管理员查看"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -526,7 +526,7 @@ def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) ->
 
 
 def _handle_chat_admin_audit_query(message: dict, address: tuple[str, int]) -> Message:
-    """Return ChatServer audit logs for admin review."""
+    """返回ChatServer审计日志供管理员查看"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -550,7 +550,7 @@ def _handle_chat_admin_audit_query(message: dict, address: tuple[str, int]) -> M
 
 
 def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Message:
-    """Update ChatServer-local user role."""
+    """更新ChatServer本地用户角色"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -578,7 +578,7 @@ def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Mess
 
 
 def _handle_chat_admin_delete_user(message: dict, address: tuple[str, int]) -> Message:
-    """Delete ChatServer-local contact copy while preserving chat history."""
+    """删除ChatServer本地联系人副本，保留聊天历史"""
     ticket = _decrypt_valid_service_ticket(message)
     revoked = _revoked_session_error(message, ticket, address)
     if revoked:
@@ -608,7 +608,7 @@ def _decrypt_valid_service_ticket(message: dict):
 
 
 def _revoked_session_error(message: dict, ticket, address: tuple[str, int]) -> Message | None:
-    """Reject requests that use a session revoked by an administrator."""
+    """拒绝使用被管理员撤销的会话的请求"""
     revocation = dao.get_active_session_revocation(ticket.client_id)
     if not revocation:
         return None
@@ -664,7 +664,7 @@ def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:
 
 
 def _update_user_last_seen(username: str, client_ip: str = "") -> None:
-    """Update user's last seen timestamp to keep them online."""
+    """更新用户最后活跃时间戳以保持在线状态"""
     with online_lock:
         if username in online_users:
             online_users[username]["last_seen"] = int(time.time() * 1000)
@@ -694,7 +694,7 @@ def _current_online_users() -> list[dict]:
 
 
 def _current_contact_users() -> list[dict]:
-    """Merge the persisted user directory with current ChatServer online state."""
+    """将持久化用户目录与当前ChatServer在线状态合并"""
     online = {item["username"]: item for item in _current_online_users()}
     contacts = []
     for user in dao.list_users():
@@ -721,7 +721,7 @@ def _current_contact_users() -> list[dict]:
 
 
 def main() -> None:
-    """Start the chat server."""
+    """启动聊天服务器"""
     db_path = ensure_database("chat")
     host, port = server_bind_address("chat_server")
     public_host, public_port = service_address("chat_server")

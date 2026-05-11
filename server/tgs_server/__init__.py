@@ -1,1 +1,1 @@
-"""Ticket Granting Server package."""
+"""票据授予服务器包"""

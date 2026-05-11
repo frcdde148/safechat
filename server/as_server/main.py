@@ -1,4 +1,4 @@
-"""AS server entry point."""
+"""AS认证服务器入口文件"""
 
 from __future__ import annotations
 
@@ -14,21 +14,21 @@ from database.init_db import ensure_database
 from server.as_server.core import AuthenticationServer
 from server.simple_tcp_server import serve
 
-# Initialize Authentication Server instance
+# 初始化认证服务器实例
 as_server = AuthenticationServer()
 
 PROTOCOL_VERSION = "safechat-kerberos-v4-ext"
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> dict:
-    """Handle Client -> AS requests and return response dict."""
+    """处理客户端到AS服务器的请求并返回响应"""
     if message["type"].startswith("AS_ADMIN_"):
         return _handle_admin_message(message, address)
 
     if message["type"] == "AS_SESSION_HEARTBEAT":
         return _handle_session_heartbeat(message, address)
 
-    # Validate message type
+    # 验证消息类型
     if message["type"] != "C_AS_REQ":
         return {
             "type": "ERROR",
@@ -43,7 +43,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
             "pubkey": "",
         }
     
-    # Extract credentials from request
+    # 从请求中提取凭证
     username = message["body"].get("username", "")
     client_addr = address[0]
     message_body = message.get("body", {})
@@ -51,7 +51,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     message_sig = message.get("sig", "")
     message_pubkey = message.get("pubkey", "")
     
-    # Perform authentication
+    # 执行认证
     response = as_server.authenticate(username, client_addr, message_body, message_hmac, message_sig, message_pubkey)
     
     if not response.success:
@@ -68,7 +68,7 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
             "pubkey": "",
         }
     
-    # Build response body with ALL required fields
+    # 构建包含所有必需字段的响应体
     response_body = {
         "client_id": response.client_id,
         "encrypted_session_key": response.encrypted_session_key,
@@ -275,6 +275,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
 
 
 def _handle_session_heartbeat(message: dict, address: tuple[str, int]) -> dict:
+    """处理会话心跳消息"""
     body = message.get("body", {})
     username = str(body.get("username", ""))
     session_id = str(body.get("session_id", ""))
@@ -290,6 +291,7 @@ def _handle_session_heartbeat(message: dict, address: tuple[str, int]) -> dict:
 
 
 def _validate_user_fields(username: str, password: str, role: str) -> str:
+    """验证用户字段合法性"""
     if not re.fullmatch(r"[A-Za-z0-9_]{3,32}", username):
         return "用户名必须为 3-32 位字母、数字或下划线"
     if len(password) < 6:
@@ -300,7 +302,7 @@ def _validate_user_fields(username: str, password: str, role: str) -> str:
 
 
 def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
-    """Issue an admin token after validating the existing Kerberos TGT."""
+    """验证Kerberos TGT后签发管理员令牌"""
     dao = as_server.dao
     try:
         tgs_service = dao.get_service(as_server.TGS_SERVICE)
@@ -326,7 +328,7 @@ def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
 
 
 def main() -> None:
-    """Start the authentication server."""
+    """启动认证服务器"""
     db_path = ensure_database("as")
     host, port = server_bind_address("as_server")
     public_host, public_port = service_address("as_server")

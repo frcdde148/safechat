@@ -1,1 +1,1 @@
-"""ChatServer package."""
+"""聊天服务器包"""
