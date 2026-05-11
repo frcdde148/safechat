@@ -1,0 +1,33 @@
+{
+  "as_server": {
+    "bind_host": "0.0.0.0",
+    "public_host": "AS_HOST_IP",
+    "port": 8000
+  },
+  "tgs_server": {
+    "bind_host": "0.0.0.0",
+    "public_host": "TGS_HOST_IP",
+    "port": 8001,
+    "service_key": "demo-tgs-key"
+  },
+  "chat_server": {
+    "bind_host": "0.0.0.0",
+    "public_host": "CHAT_HOST_IP",
+    "port": 9000,
+    "service_name": "chat_server",
+    "service_key": "demo-chat-key"
+  },
+  "database": {
+    "path": "database/chatroom.db",
+    "as_path": "database/as.db",
+    "tgs_path": "database/tgs.db",
+    "chat_path": "database/chat.db"
+  },
+  "security": {
+    "password_hash": "sha256",
+    "signature": "rsa-1024",
+    "ticket_cipher": "des",
+    "audit_content_cipher": "des",
+    "admin_token_secret": "safechat-admin-token-secret"
+  }
+}

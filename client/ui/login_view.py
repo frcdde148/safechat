@@ -1,4 +1,8 @@
-"""Login and authentication screen."""
+"""登录界面组件
+
+包含用户名密码输入、AS服务器配置、认证状态显示。
+
+"""
 
 from __future__ import annotations
 
@@ -20,21 +24,29 @@ from client.ui.auth_flow_view import AuthFlowView
 
 
 class LoginView(QWidget):
-    """Client login view with server configuration and auth status."""
+    """客户端登录视图，包含服务器配置和认证状态"""
 
     login_requested = pyqtSignal(dict)
     enter_chat_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # 获取默认AS服务器地址
         as_host, as_port = service_address("as_server")
+        
+        # 创建输入控件
         self.username_input = QLineEdit()
         self.password_input = QLineEdit()
         self.as_host_input = QLineEdit(as_host)
         self.as_port_input = self._port_box(as_port)
+        
         self.status_label = QLabel("等待登录")
         self.status_label.setObjectName("mutedBadge")
+        
+        # 认证流程视图
         self.auth_flow = AuthFlowView()
+        
+        # 进入聊天室按钮（默认禁用，认证通过后启用）
         self.enter_chat_button = QPushButton("进入聊天室")
         self.enter_chat_button.setObjectName("secondaryButton")
         self.enter_chat_button.setEnabled(False)
@@ -43,6 +55,7 @@ class LoginView(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
+        """构建登录界面布局"""
         title = QLabel("SafeChat 客户端")
         title.setObjectName("title")
 
@@ -57,7 +70,7 @@ class LoginView(QWidget):
 
         self.username_input.setPlaceholderText("用户名")
         self.password_input.setPlaceholderText("密码")
-        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setEchoMode(QLineEdit.Password)  # 密码隐藏
 
         form.addRow("用户名", self.username_input)
         form.addRow("密码", self.password_input)
@@ -93,16 +106,15 @@ class LoginView(QWidget):
         root.addWidget(self.auth_flow, 2)
 
     def _emit_login_requested(self) -> None:
-        self.login_requested.emit(
-            {
-                "username": self.username_input.text().strip(),
-                "password": self.password_input.text(),
-                "as": (self.as_host_input.text().strip(), self.as_port_input.value()),
-            }
-        )
+        """发出登录请求信号（收集表单数据）"""
+        self.login_requested.emit({
+            "username": self.username_input.text().strip(),
+            "password": self.password_input.text(),
+            "as": (self.as_host_input.text().strip(), self.as_port_input.value()),
+        })
 
     def set_status(self, text: str, level: str = "muted") -> None:
-        """Update authentication status text."""
+        """更新认证状态显示"""
         object_name = {
             "ok": "okBadge",
             "warn": "warnBadge",
@@ -116,6 +128,7 @@ class LoginView(QWidget):
 
     @staticmethod
     def _port_box(value: int) -> QSpinBox:
+        """创建端口输入框（范围1-65535）"""
         box = QSpinBox()
         box.setRange(1, 65535)
         box.setValue(value)
@@ -124,6 +137,7 @@ class LoginView(QWidget):
 
     @staticmethod
     def _host_port_row(host_input: QLineEdit, port_input: QSpinBox) -> QWidget:
+        """创建地址和端口的水平布局行"""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)

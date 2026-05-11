@@ -1,4 +1,4 @@
-"""Authentication phase status widgets."""
+"""认证阶段状态控件。用于显示各认证阶段的可视化状态和报文详情。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ AUTH_STAGES = (
 
 
 class StageRow(QFrame):
-    """Single Kerberos authentication stage row."""
+    """单个 Kerberos 认证阶段的行视图。
+
+    每一行展示阶段编码、阶段描述以及当前状态。
+    """
 
     def __init__(self, code: str, label: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -42,7 +45,12 @@ class StageRow(QFrame):
         layout.addWidget(self.status_label, 0, 2)
 
     def set_status(self, status: str) -> None:
-        """Set visual status for this stage."""
+        """设置该阶段的可视化状态。
+
+        参数 `status` 使用内部标识："waiting", "running", "success", "failed"。
+        会更新行内显示文本和对应的样式对象名，从而改变视觉样式。
+        """
+        # 状态映射：内部状态 -> (显示文本, 样式对象名)
         status_map = {
             "waiting": ("等待", "mutedBadge"),
             "running": ("进行中", "warnBadge"),
@@ -57,7 +65,9 @@ class StageRow(QFrame):
 
 
 class AuthFlowView(QFrame):
-    """Display Kerberos six-step authentication progress."""
+    """显示 Kerberos 六步认证进度的视图。
+
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -86,25 +96,24 @@ class AuthFlowView(QFrame):
         layout.addWidget(self.detail_view, 1)
 
     def reset(self) -> None:
-        """Reset all stages to waiting."""
+
         for row in self.stage_rows.values():
             row.set_status("waiting")
         self.detail_view.clear()
 
     def mark_running(self, stage_code: str) -> None:
-        """Mark a stage as running."""
         self.stage_rows[stage_code].set_status("running")
 
     def mark_success(self, stage_code: str) -> None:
-        """Mark a stage as successful."""
+    
         self.stage_rows[stage_code].set_status("success")
 
     def mark_failed(self, stage_code: str) -> None:
-        """Mark a stage as failed."""
+     
         self.stage_rows[stage_code].set_status("failed")
 
     def append_detail(self, title: str, body: str) -> None:
-        """Append human-readable protocol detail for classroom demonstration."""
+     
         self.detail_view.append(f"=== {title} ===")
         self.detail_view.append(body)
         self.detail_view.append("")
