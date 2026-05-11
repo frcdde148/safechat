@@ -1,4 +1,4 @@
-"""Admin console entry point."""
+"""管理端程序入口。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from admin.ui import AdminConsole
 
 
 def main() -> None:
-    """Start the SafeChat admin console."""
+    """启动 SafeChat 管理控制台。"""
     app = QApplication(sys.argv)
     window = AdminConsole()
     window.show()
