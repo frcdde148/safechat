@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from common.crypto.des import decrypt_text, encrypt_text
@@ -51,6 +51,51 @@ class Authenticator:
     timestamp: int
 
 
+def ticket_plaintext(ticket: Ticket) -> dict[str, Any]:
+    """将票据转换为教材里的标准 Kerberos plaintext 结构。"""
+    payload: dict[str, Any] = {
+        "id_c": ticket.client_id,
+        "ad_c": ticket.client_addr,
+    }
+    if ticket.service_id == "tgs_server":
+        payload.update(
+            {
+                "k_c_tgs": ticket.session_key,
+                "id_tgs": ticket.service_id,
+                "ts_2": ticket.issued_at,
+                "lifetime_2": ticket.expires_at,
+            }
+        )
+    elif ticket.service_id == "chat_server":
+        payload.update(
+            {
+                "k_c_v": ticket.session_key,
+                "id_v": ticket.service_id,
+                "ts_4": ticket.issued_at,
+                "lifetime_4": ticket.expires_at,
+            }
+        )
+    else:
+        payload.update(
+            {
+                "session_key": ticket.session_key,
+                "service_id": ticket.service_id,
+                "issued_at": ticket.issued_at,
+                "expires_at": ticket.expires_at,
+            }
+        )
+    return payload
+
+
+def authenticator_plaintext(authenticator: Authenticator, timestamp_field: str = "ts_3") -> dict[str, Any]:
+    """将认证子转换为标准 Kerberos plaintext 结构。"""
+    return {
+        "id_c": authenticator.client_id,
+        "ad_c": authenticator.client_addr,
+        timestamp_field: authenticator.timestamp,
+    }
+
+
 def issue_ticket(
     client_id: str,
     client_addr: str,
@@ -78,18 +123,57 @@ def issue_authenticator(client_id: str, client_addr: str) -> Authenticator:
 
 def encrypt_model(model: Ticket | Authenticator | dict[str, Any], secret: str) -> dict[str, str]:
     """使用 DES 加密票据/认证子对象。"""
-    payload = asdict(model) if not isinstance(model, dict) else model
+    if isinstance(model, Ticket):
+        payload = ticket_plaintext(model)
+    elif isinstance(model, Authenticator):
+        payload = authenticator_plaintext(model)
+    else:
+        payload = model
+    return encrypt_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), secret)
+
+
+def encrypt_ticket(ticket: Ticket, secret: str) -> dict[str, str]:
+    """加密票据并输出标准 Kerberos JSON 载荷。"""
+    return encrypt_model(ticket, secret)
+
+
+def encrypt_authenticator(authenticator: Authenticator, secret: str, timestamp_field: str = "ts_3") -> dict[str, str]:
+    """加密认证子并允许指定时间戳字段名。"""
+    payload = authenticator_plaintext(authenticator, timestamp_field=timestamp_field)
     return encrypt_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), secret)
 
 
 def decrypt_ticket(encrypted: dict[str, str], secret: str) -> Ticket:
     """解密一个票据对象。"""
-    return Ticket(**_decrypt_dict(encrypted, secret))
+    payload = _decrypt_dict(encrypted, secret)
+    return Ticket(
+        client_id=str(payload.get("id_c", payload.get("client_id", ""))),
+        client_addr=str(payload.get("ad_c", payload.get("client_addr", ""))),
+        session_key=str(
+            payload.get("k_c_tgs")
+            or payload.get("k_c_v")
+            or payload.get("session_key", "")
+        ),
+        service_id=str(payload.get("id_tgs", payload.get("id_v", payload.get("service_id", "")))),
+        issued_at=int(payload.get("ts_2", payload.get("ts_4", payload.get("issued_at", 0)))),
+        expires_at=int(payload.get("lifetime_2", payload.get("lifetime_4", payload.get("expires_at", 0)))),
+        client_pubkey=str(payload.get("client_pubkey", "")),
+    )
 
 
 def decrypt_authenticator(encrypted: dict[str, str], secret: str) -> Authenticator:
     """解密一个认证子对象。"""
-    return Authenticator(**_decrypt_dict(encrypted, secret))
+    payload = _decrypt_dict(encrypted, secret)
+    return Authenticator(
+        client_id=str(payload.get("id_c", payload.get("client_id", ""))),
+        client_addr=str(payload.get("ad_c", payload.get("client_addr", ""))),
+        timestamp=int(
+            payload.get(
+                "ts_5",
+                payload.get("ts_3", payload.get("ts_1", payload.get("timestamp", 0))),
+            )
+        ),
+    )
 
 
 def _decrypt_dict(encrypted: dict[str, str], secret: str) -> dict[str, Any]:

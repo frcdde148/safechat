@@ -36,8 +36,10 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         }
     
     # 提取请求参数
-    ticket_tgt = message["body"].get("ticket_tgt", {})
-    authenticator = message["body"].get("authenticator", {})
+    body = message.get("body", {})
+    extensions = body.get("extensions", {}) if isinstance(body.get("extensions", {}), dict) else {}
+    ticket_tgt = body.get("ticket_tgs", body.get("ticket_tgt", {}))
+    authenticator = body.get("authenticator_c", body.get("authenticator", {}))
     client_addr = address[0]
     message_body = message.get("body", {})
     message_hmac = message.get("hmac", "")
@@ -64,13 +66,8 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     
     # 构建包含所有必需字段的响应体
     response_body = {
-        "client_id": response.client_id,
-        "encrypted_session_key": response.encrypted_session_key,
-        "service_ticket": response.service_ticket,
-        "chat_host": response.chat_host,
-        "chat_port": response.chat_port,
-        "version": PROTOCOL_VERSION,
-        "request_id": str(uuid.uuid4()),
+        "client_part": response.client_part,
+        "extensions": response.extensions,
     }
     return _envelope(message, "TGS_C_REP", response_body)
 

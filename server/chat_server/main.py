@@ -19,6 +19,7 @@ from server.simple_tcp_server import serve
 CHAT_SERVICE = "chat_server"  # 聊天服务标识
 
 dao = SQLiteDAO(role="chat")  # 数据库访问对象
+as_dao = SQLiteDAO(role="as")  # AS数据库，用于查询用户名绑定的公钥
 online_lock = threading.Lock()  # 在线用户列表线程锁（多用户同时在线安全）
 online_users: dict[str, dict] = {}  # 在线用户列表 {用户名: {session_id, client_ip, last_seen, status}}
 pubkey_lock = threading.Lock()  # 公钥绑定线程锁
@@ -65,14 +66,16 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     if not chat:
         return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
 
-    ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
+    body = message.get("body", {})
+    extensions = body.get("extensions", {}) if isinstance(body.get("extensions", {}), dict) else {}
+    ticket = decrypt_ticket(body.get("ticket_v", body.get("service_ticket", {})), chat["service_key"])
     if not ticket.is_valid():
         return Message(
             type="ERROR",
             seq=message["seq"],
             body={"error": f"service ticket is expired: {ticket.validity_debug()}"},
         )
-    authenticator = decrypt_authenticator(message["body"]["authenticator"], ticket.session_key)
+    authenticator = decrypt_authenticator(body.get("authenticator_c", body.get("authenticator", {})), ticket.session_key)
     if authenticator.client_id != ticket.client_id:
         return Message(
             type="ERROR",
@@ -82,8 +85,8 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     if authenticator.client_addr and authenticator.client_addr != ticket.client_addr:
         return Message(type="ERROR", seq=message["seq"], body={"error": "authenticator does not match service ticket"})
 
-    mutual_auth = encrypt_model({"timestamp_plus_one": authenticator.timestamp + 1}, ticket.session_key)
-    session_id = message["body"].get("session_id", "")
+    mutual_auth = encrypt_model({"ts_5_plus_1": authenticator.timestamp + 1}, ticket.session_key)
+    session_id = str(extensions.get("session_id", body.get("session_id", "")))
     _mark_user_online(ticket.client_id, session_id, address[0])
     dao.clear_session_revocations(ticket.client_id)
     
@@ -107,10 +110,11 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     dao.add_audit_log(session_id, ticket.client_id, address[0], "CHAT_AUTH_OK")
     
     response_body = {
-        "client_id": ticket.client_id,
-        "mutual_auth": mutual_auth,
-        "offline_messages": offline_messages_data,
-        "room": "public",
+        "client_part": mutual_auth,
+        "extensions": {
+            "offline_messages": offline_messages_data,
+            "room": "public",
+        },
     }
     
     return Message(
@@ -153,7 +157,14 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
         if not is_recipient_online:
             # Keep offline private messages in durable chat history so the
             # sender and recipient both see them after switching sessions.
-            message_id = _append_chat_message(ticket.client_id, plaintext, chat_type, recipient)
+            message_id = _append_chat_message(
+                ticket.client_id,
+                plaintext,
+                chat_type,
+                recipient,
+                image_data="",
+                file_name="",
+            )
             dao.store_offline_message(recipient, ticket.client_id, plaintext)
             ack_text = "已存储，待对方上线后推送"
             dao.add_audit_log(
@@ -177,7 +188,19 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
             )
     
     # Normal message processing for group chat or online private chat
-    message_id = _append_chat_message(ticket.client_id, plaintext, chat_type, recipient)
+    # Persist original sender HMAC/SIG for later display
+    message_id = dao.store_chat_message(
+        sender=ticket.client_id,
+        recipient=recipient,
+        chat_type=chat_type,
+        session_key=_session_key(ticket.client_id, chat_type, recipient),
+        message_text=plaintext,
+        message_hmac=message.get("hmac", ""),
+        message_sig=message.get("sig", ""),
+        message_pubkey=message.get("pubkey", ""),
+        image_data="",
+        file_name="",
+    )
     dao.add_audit_log(
         "",
         ticket.client_id,
@@ -207,7 +230,8 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
         if not chat:
             return Message(type="ERROR", seq=message["seq"], body={"error": "ChatServer service is not configured"})
         
-        ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
+        body = message.get("body", {})
+        ticket = decrypt_ticket(body.get("ticket_v", body.get("service_ticket", {})), chat["service_key"])
         if not ticket.is_valid():
             return Message(
                 type="ERROR",
@@ -238,7 +262,19 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
         chat_type = message["body"].get("chat_type", "group")
         recipient = message["body"].get("recipient", "")
         
-        message_id = _append_chat_message(ticket.client_id, f"[图片] {file_name}", chat_type, recipient, plaintext, file_name)
+        # Persist image message along with sender HMAC/SIG
+        message_id = dao.store_chat_message(
+            sender=ticket.client_id,
+            recipient=recipient,
+            chat_type=chat_type,
+            session_key=_session_key(ticket.client_id, chat_type, recipient),
+            message_text=plaintext,
+            message_hmac=message.get("hmac", ""),
+            message_sig=message.get("sig", ""),
+            message_pubkey=message.get("pubkey", ""),
+            image_data=file_name,
+            file_name=file_name,
+        )
         
         dao.add_audit_log(
             "",
@@ -272,19 +308,16 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
 
 def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
     """验证消息的摘要/RSA签名，并将首次登录后的公钥绑定到用户"""
-    if not message.get("hmac") or not message.get("sig") or not message.get("pubkey"):
+    if not message.get("hmac") or not message.get("sig"):
         return False
-    pubkey_scope = f"{ticket.client_id}:{ticket.session_key}"
-    with pubkey_lock:
-        existing_pubkey = session_pubkeys.get(pubkey_scope)
-        if existing_pubkey and existing_pubkey != message["pubkey"]:
-            return False
-        session_pubkeys.setdefault(pubkey_scope, message["pubkey"])
+    bound_pubkey = as_dao.get_user_public_key(ticket.client_id)
+    if not bound_pubkey:
+        return False
     return verify_body_signature(
         message["body"],
         message["hmac"],
         message["sig"],
-        message["pubkey"],
+        bound_pubkey,
     )
 
 
@@ -330,6 +363,9 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
             "chat_type": item["chat_type"],
             "timestamp": item.get("created_at", item.get("timestamp", 0)),
             "message_cipher": encrypt_text(item.get("message_text", item.get("text", "")), ticket.session_key),
+            "hmac": item.get("message_hmac", ""),
+            "sig": item.get("message_sig", ""),
+            "pubkey": item.get("message_pubkey", ""),
         }
         # Include image data if present
         if item.get("image_data"):
@@ -601,7 +637,8 @@ def _decrypt_valid_service_ticket(message: dict):
     chat = dao.get_service(CHAT_SERVICE)
     if not chat:
         raise ValueError("ChatServer service is not configured")
-    ticket = decrypt_ticket(message["body"]["service_ticket"], chat["service_key"])
+    body = message.get("body", {})
+    ticket = decrypt_ticket(body.get("ticket_v", body.get("service_ticket", {})), chat["service_key"])
     if not ticket.is_valid():
         raise ValueError(f"service ticket is expired: {ticket.validity_debug()}")
     return ticket
@@ -634,12 +671,16 @@ def _revoked_session_error(message: dict, ticket, address: tuple[str, int]) -> M
 
 def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str, image_data: str = "", file_name: str = "") -> int:
     session_key = _session_key(sender, chat_type, recipient)
+    # message_hmac/message_sig/message_pubkey are optional; callers may pass via kwargs
     return dao.store_chat_message(
         sender=sender,
         recipient=recipient,
         chat_type=chat_type,
         session_key=session_key,
         message_text=text,
+        message_hmac="",
+        message_sig="",
+        message_pubkey="",
         image_data=image_data,
         file_name=file_name,
     )

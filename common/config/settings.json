@@ -1,18 +1,18 @@
 {
   "as_server": {
-    "bind_host": "0.0.0.0",
-    "public_host": "172.27.214.91",
+    "bind_host": "127.0.0.1",
+    "public_host": "127.0.0.1",
     "port": 8000
   },
   "tgs_server": {
-    "bind_host": "0.0.0.0",
-    "public_host": "172.27.194.203",
+    "bind_host": "127.0.0.1",
+    "public_host": "127.0.0.1",
     "port": 8001,
     "service_key": "demo-tgs-key"
   },
   "chat_server": {
-    "bind_host": "0.0.0.0",
-    "public_host": "172.27.209.151", 
+    "bind_host": "127.0.0.1",
+    "public_host": "127.0.0.1",
     "port": 9000,
     "service_name": "chat_server",
     "service_key": "demo-chat-key"

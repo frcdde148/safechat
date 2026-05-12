@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,11 +19,8 @@ from database.dao.sqlite_dao import SQLiteDAO
 class TGSResponse:
     """TGS服务器响应数据结构"""
     success: bool
-    client_id: str = ""
-    encrypted_session_key: dict[str, str] = field(default_factory=dict)
-    service_ticket: dict[str, str] = field(default_factory=dict)
-    chat_host: str = ""
-    chat_port: int = 0
+    client_part: dict[str, str] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
 
@@ -116,7 +114,20 @@ class TicketGrantingServer:
             encrypted_service_ticket = encrypt_model(service_ticket, chat_service["service_key"])
             
             # 使用Kc,tgs(TGT中的会话密钥)加密session_key_c_v
-            encrypted_session_key = encrypt_text(session_key_c_v, tgt.session_key)
+            client_part = encrypt_text(
+                json.dumps(
+                    {
+                        "k_c_v": session_key_c_v,
+                        "id_v": self.CHAT_SERVICE,
+                        "ts_4": service_ticket.issued_at,
+                        "lifetime_4": service_ticket.expires_at,
+                        "ticket_v": encrypted_service_ticket,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                tgt.session_key,
+            )
             
             # 记录成功的票据签发
             self._log_audit("", tgt.client_id, client_addr, "TGS_TICKET_OK", 
@@ -124,11 +135,13 @@ class TicketGrantingServer:
             
             return TGSResponse(
                 success=True,
-                client_id=tgt.client_id,
-                encrypted_session_key=encrypted_session_key,
-                service_ticket=encrypted_service_ticket,
-                chat_host=chat_service["service_host"],
-                chat_port=chat_service["service_port"],
+                client_part=client_part,
+                extensions={
+                    "chat_host": chat_service["service_host"],
+                    "chat_port": chat_service["service_port"],
+                    "version": self.PROTOCOL_VERSION,
+                    "request_id": str(uuid.uuid4()),
+                },
             )
             
         except Exception as e:
