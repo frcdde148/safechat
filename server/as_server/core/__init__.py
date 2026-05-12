@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 import uuid
@@ -19,16 +20,11 @@ from database.dao.sqlite_dao import SQLiteDAO
 class ASResponse:
     """AS服务器响应数据结构"""
     success: bool
-    client_id: str = ""
-    encrypted_session_key: dict[str, str] = field(default_factory=dict)
-    ticket_tgt: dict[str, str] = field(default_factory=dict)
-    salt: str = ""
-    tgs_host: str = ""
-    tgs_port: int = 0
+    client_part: dict[str, str] = field(default_factory=dict)
+    extensions: dict[str, Any] = field(default_factory=dict)
     error: str = ""
     version: str = "safechat-kerberos-v4-ext"
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    session_id: str = ""
 
 
 class AuthenticationServer:
@@ -79,13 +75,21 @@ class AuthenticationServer:
         if self.dao.is_ip_banned(client_addr):
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP banned")
             return ASResponse(success=False, error="client IP is banned")
+
+        public_key_pem = str(message_pubkey or message_body.get("public_key_pem", "") or message_body.get("pubkey", "") or "")
         
         user = self.dao.get_user(username)
         if not user:
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "User not found")
             return ASResponse(success=False, error="invalid username or password")
+        if not public_key_pem:
+            return ASResponse(success=False, error="public key is required for binding")
         
-        is_admin_console = message_body.get("client_type") == "admin_console" and user.get("role") == "admin"
+        extensions = message_body.get("extensions", {}) if isinstance(message_body.get("extensions", {}), dict) else {}
+        is_admin_console = (
+            extensions.get("client_type", message_body.get("client_type")) == "admin_console"
+            and user.get("role") == "admin"
+        )
 
         session_client_type = "admin_console" if is_admin_console else "client"
         existing_session = self.dao.get_active_session(username, session_client_type)
@@ -117,7 +121,20 @@ class AuthenticationServer:
         encrypted_tgt = encrypt_model(tgt, tgs_service["service_key"])
         
         client_key = user["password_hash"]
-        encrypted_session_key = encrypt_text(session_key, client_key)
+        client_part = encrypt_text(
+            json.dumps(
+                {
+                    "k_c_tgs": session_key,
+                    "id_tgs": self.TGS_SERVICE,
+                    "ts_2": tgt.issued_at,
+                    "lifetime_2": tgt.expires_at,
+                    "ticket_tgs": encrypted_tgt,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            client_key,
+        )
         
         session_id = secrets.token_hex(32)
         self.dao.create_session(
@@ -129,19 +146,23 @@ class AuthenticationServer:
             invalidate_existing=not is_admin_console,
             client_type=session_client_type,
         )
+
+        self.dao.set_user_public_key(username, public_key_pem)
         
         self._log_audit(session_id, username, client_addr, "LOGIN_AS_OK", 
                         f"User {username} authenticated, TGT issued")
         
         return ASResponse(
             success=True,
-            client_id=username,
-            encrypted_session_key=encrypted_session_key,
-            ticket_tgt=encrypted_tgt,
-            salt=user["salt"],
-            tgs_host=tgs_service["service_host"],
-            tgs_port=tgs_service["service_port"],
-            session_id=session_id,
+            client_part=client_part,
+            extensions={
+                "salt": user["salt"],
+                "tgs_host": tgs_service["service_host"],
+                "tgs_port": tgs_service["service_port"],
+                "version": self.PROTOCOL_VERSION,
+                "request_id": str(uuid.uuid4()),
+                "session_id": session_id,
+            },
         )
     
     def _issue_tgt(self, client_id: str, client_addr: str, session_key: str) -> Ticket:

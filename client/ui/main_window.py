@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
             self.login_view.set_status("认证通过", "ok")
             self.login_view.login_button.setEnabled(True)
             self.login_view.enter_chat_button.setEnabled(True)
-            self.login_view.auth_flow.append_detail(
+            self.login_view.auth_flow.append_message(
                 "认证完成",
                 "已获得 ChatServer 服务票据和会话密钥 Kc,v。可继续查看上方报文细节，确认后点击“进入聊天室”。",
             )
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         current_stage, current_label = AUTH_STAGES[self._stage_index]
         self.login_view.auth_flow.mark_running(current_stage)
         ok, detail = self._auth_client.run_stage(current_stage)
-        self.login_view.auth_flow.append_detail(current_label, detail)
+        self.login_view.auth_flow.append_detail(current_stage, current_label, detail)
         
         # 处理认证失败
         if not ok:
@@ -170,6 +170,8 @@ class MainWindow(QMainWindow):
         # 设置用户信息和服务器状态
         self.chat_view.current_user_label.setText(username)
         self.chat_view.server_status.set_value(f"{chat_host}:{chat_port}", "okBadge")
+        if self._auth_client:
+            self.chat_view.set_session_key(self._auth_client.session_key_c_v)
         self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
         
         # 切换到聊天视图
@@ -222,15 +224,19 @@ class MainWindow(QMainWindow):
             
             from datetime import datetime
             timestamp = datetime.now().strftime("%H:%M:%S")
-            ciphertext = str(result.get("sent", {}).get("body", {}).get("message_cipher", ""))
+            sent_msg = result.get("sent", {})
+            ciphertext = str(sent_msg.get("body", {}).get("message_cipher", ""))
+            hmac_digest = str(sent_msg.get("hmac", ""))
+            signature = str(sent_msg.get("sig", ""))
+            pubkey = str(sent_msg.get("pubkey", ""))
             message_id = int(result.get("message_id", 0))
             
             # 记录已发送的消息ID（避免重复显示）
             if message_id:
                 self._visible_message_ids.add((self._view_session_key(session["chat_type"], session["recipient"]), message_id))
 
-            # 显示发送的消息
-            self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp)
+            # 显示发送的消息（包含安全层信息）
+            self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp, hmac_digest, signature, pubkey)
             
             # 处理服务器回执
             ack = result.get("ack", "")
@@ -433,8 +439,11 @@ class MainWindow(QMainWindow):
                 except:
                     timestamp = ""
                     
-            # 添加消息到聊天视图
-            self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp)
+            # 添加消息到聊天视图，包含可选的 hmac/sig
+            hmac_val = message.get("hmac", "")
+            sig_val = message.get("sig", "")
+            pubkey_val = message.get("pubkey", "")
+            self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
 
     def _view_session_key(self, chat_type: str = "group", recipient: str = "") -> str:
         """生成视图会话唯一标识"""

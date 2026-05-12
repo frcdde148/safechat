@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -29,7 +29,7 @@ class MessageBubble(QFrame):
     包含头像、用户名、消息内容（文本或图片）、时间戳以及可切换的密文/明文显示。
     """
 
-    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", parent: QWidget | None = None) -> None:
+    def __init__(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", hmac: str = "", sig: str = "", pubkey: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("messageBubble")
         self.text = text
@@ -40,6 +40,9 @@ class MessageBubble(QFrame):
         self.username = username
         self.show_cipher = False
         self.timestamp = timestamp
+        self.hmac = hmac
+        self.sig = sig
+        self.pubkey = pubkey
         
         # 主布局
         layout = QHBoxLayout(self)
@@ -65,7 +68,7 @@ class MessageBubble(QFrame):
         
         # 时间戳标签
         self.timestamp_label = QLabel(self.timestamp)
-        self.timestamp_label.setStyleSheet("font-size: 11px; color: #9ca3af;")
+        self.timestamp_label.setStyleSheet("font-size: 14px; color: #9ca3af;")
         
         # 消息内容（图片或文本）
         if image_data:
@@ -150,12 +153,109 @@ class MessageBubble(QFrame):
     def set_display_mode(self, show_ciphertext: bool) -> None:
         self.show_cipher = show_ciphertext
         if not self.image_data:
-            if show_ciphertext and self.ciphertext:
-                self.message_label.setText(self.ciphertext)
-                self.message_label.setStyleSheet(self._bubble_style("#f3f4f6", "#6b7280", is_system=True) + " font-family: 'Consolas', 'Monaco', monospace; font-size: 14px;")
+            if show_ciphertext and (self.ciphertext or self.hmac or self.sig):
+                # 构建安全层卡片HTML
+                # 如果没有 hmac 和 sig，仅显示 ciphertext 原文（不含 iv），并保持原有气泡样式
+                if not self.hmac and not self.sig:
+                    # 尝试从字符串化的 dict 中提取内部 ciphertext 字段
+                    cipher_val = self.ciphertext or ""
+                    try:
+                        import ast, json
+                        s = str(self.ciphertext).strip()
+                        if s.startswith("{"):
+                            try:
+                                obj = ast.literal_eval(s)
+                            except Exception:
+                                try:
+                                    obj = json.loads(s)
+                                except Exception:
+                                    obj = None
+                            if isinstance(obj, dict) and "ciphertext" in obj:
+                                cipher_val = obj.get("ciphertext", "")
+                    except Exception:
+                        cipher_val = self.ciphertext
+
+                    # 使用等宽字体显示原始 ciphertext，保持气泡颜色不变
+                    font = QFont("Consolas")
+                    font.setPointSize(12)
+                    self.message_label.setFont(font)
+                    self.message_label.setText(str(cipher_val))
+                else:
+                    html = self._build_security_layers_html()
+                    self.message_label.setText(html)
             else:
                 self.message_label.setText(self.text)
                 self._restore_style()
+
+    def _build_security_layers_html(self) -> str:
+        """构建仅包含 DES ciphertext、HMAC 和 RSA signature 的安全层 HTML。
+
+        规则：
+        - 不显示 Plaintext 和 Packet Info
+        - 若 ciphertext 是 dict 字符串或 dict，尝试提取内部 'ciphertext' 字段（不显示 iv）
+        """
+        import ast
+        import json
+
+        html_parts = []
+
+        # 解析并提取真正的 ciphertext 字段（如果可能）
+        cipher_val = self.ciphertext or ""
+        try:
+            if isinstance(self.ciphertext, str):
+                s = self.ciphertext.strip()
+                if s.startswith("{"):
+                    try:
+                        obj = ast.literal_eval(s)
+                    except Exception:
+                        try:
+                            obj = json.loads(s)
+                        except Exception:
+                            obj = None
+                    if isinstance(obj, dict) and "ciphertext" in obj:
+                        cipher_val = obj.get("ciphertext", "")
+        except Exception:
+            cipher_val = self.ciphertext
+
+        cipher_display = cipher_val if cipher_val is not None else ""
+        cipher_display_escaped = str(cipher_display).replace("<", "&lt;").replace(">", "&gt;")
+
+        # DES 层（蓝色）：只显示 ciphertext（不包含 iv）
+        if cipher_display_escaped:
+            html_parts.append(f'''
+        <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 14px; color: #075985; margin-bottom: 4px;">DES 加密 (ciphertext)</div>
+            <div style="font-size: 14px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 160px; overflow-y: auto;">
+                {cipher_display_escaped}
+            </div>
+        </div>
+        ''')
+
+        # HMAC 层：始终显示（若为空显示 '(none)'）
+        hmac_display = str(self.hmac) if self.hmac else "(none)"
+        hmac_display_escaped = hmac_display.replace("<", "&lt;").replace(">", "&gt;")
+        html_parts.append(f'''
+        <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 14px; color: #075985; margin-bottom: 4px;">HMAC-SHA256</div>
+            <div style="font-size: 14px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 120px; overflow-y: auto;">
+                {hmac_display_escaped}
+            </div>
+        </div>
+        ''')
+
+        # RSA 层：始终显示（若为空显示 '(none)'）
+        sig_display = str(self.sig) if self.sig else "(none)"
+        sig_display_escaped = sig_display.replace("<", "&lt;").replace(">", "&gt;")
+        html_parts.append(f'''
+        <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 14px; color: #075985; margin-bottom: 4px;">RSA Signature</div>
+            <div style="font-size: 14px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 160px; overflow-y: auto;">
+                {sig_display_escaped}
+            </div>
+        </div>
+        ''')
+
+        return ''.join(html_parts)
 
     def _restore_style(self) -> None:
         if self.kind == "self":
@@ -283,12 +383,17 @@ class StatusLine(QWidget):
     用于在右侧面板显示简短状态项（例如：认证、连接、心跳等）。
     """
 
+    clicked = pyqtSignal(str)
+
     def __init__(self, name: str, value: str, badge: str = "mutedBadge") -> None:
         super().__init__()
+        self.name = name
+        self._value = value
         self.name_label = QLabel(name)
         self.name_label.setObjectName("hint")
         self.value_label = QLabel(value)
         self.value_label.setObjectName(badge)
+        self.setCursor(Qt.PointingHandCursor)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -296,11 +401,20 @@ class StatusLine(QWidget):
         layout.addStretch(1)
         layout.addWidget(self.value_label)
 
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.name)
+        super().mousePressEvent(event)
+
     def set_value(self, value: str, badge: str = "mutedBadge") -> None:
+        self._value = value
         self.value_label.setText(value)
         self.value_label.setObjectName(badge)
         self.value_label.style().unpolish(self.value_label)
         self.value_label.style().polish(self.value_label)
+
+    def current_value(self) -> str:
+        return self._value
 
 
 class ChatView(QWidget):
@@ -335,6 +449,8 @@ class ChatView(QWidget):
         # 跟踪当前会话类型和接收者
         self.current_chat_type = "group"
         self.current_recipient = ""
+        self._session_key_plaintext = ""
+        self._session_key_visible = False
 
         self.session_type_status = StatusLine("会话类型", "群聊大厅", "okBadge")
         self.server_status = StatusLine("连接服务器", "127.0.0.1:9000", "okBadge")
@@ -347,6 +463,7 @@ class ChatView(QWidget):
         self._build_ui()
         self._seed_demo_content()
         self._refresh_cipher_toggle_ui()
+        self.key_status.clicked.connect(self._toggle_session_key_display)
         self.group_chat_button.clicked.connect(self.return_to_group_chat_requested.emit)
         self.relogin_button.clicked.connect(self._on_relogin_clicked)
         self.image_button.clicked.connect(self.image_send_requested.emit)
@@ -471,8 +588,8 @@ class ChatView(QWidget):
         layout.addStretch(1)
         return panel
 
-    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "") -> None:
-        bubble = MessageBubble(text, kind, ciphertext, image_data, file_name, username, timestamp)
+    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", hmac: str = "", sig: str = "", pubkey: str = "") -> None:
+        bubble = MessageBubble(text, kind, ciphertext, image_data, file_name, username, timestamp, hmac, sig, pubkey)
         self.message_area.insertWidget(self.message_area.count() - 1, bubble)
         if kind not in ("system", "security"):
             self.message_bubbles.append(bubble)
@@ -533,6 +650,30 @@ class ChatView(QWidget):
         self.current_chat_type = chat_type
         self.current_recipient = recipient
         self.chat_title_label.setText(f"私聊 {recipient}" if chat_type == "private" and recipient else "群聊大厅")
+
+    def set_session_key(self, session_key: str) -> None:
+        """设置当前会话密钥并默认隐藏明文。"""
+        self._session_key_plaintext = session_key or ""
+        self._session_key_visible = False
+        self._refresh_session_key_label()
+
+    def _toggle_session_key_display(self, _name: str) -> None:
+        if not self._session_key_plaintext:
+            return
+        self._session_key_visible = not self._session_key_visible
+        self._refresh_session_key_label()
+
+    def _refresh_session_key_label(self) -> None:
+        if not self._session_key_plaintext:
+            self.key_status.set_value("未建立", "warnBadge")
+            return
+        if self._session_key_visible:
+            self.key_status.set_value(self._session_key_plaintext, "okBadge")
+            self.key_status.value_label.setToolTip("点击可隐藏会话密钥")
+        else:
+            masked = f"{self._session_key_plaintext[:6]}...{self._session_key_plaintext[-4:]}" if len(self._session_key_plaintext) > 12 else "已建立"
+            self.key_status.set_value(masked, "okBadge")
+            self.key_status.value_label.setToolTip("点击可显示会话密钥")
 
     def set_online_users(self, users: list[dict]) -> None:
         """用服务器返回的用户列表替换左侧在线用户视图。

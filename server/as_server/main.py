@@ -44,12 +44,16 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         }
     
     # 从请求中提取凭证
-    username = message["body"].get("username", "")
+    body = message.get("body", {})
+    extensions = body.get("extensions", {}) if isinstance(body.get("extensions", {}), dict) else {}
+    username = body.get("id_c", body.get("username", ""))
     client_addr = address[0]
     message_body = message.get("body", {})
     message_hmac = message.get("hmac", "")
     message_sig = message.get("sig", "")
-    message_pubkey = message.get("pubkey", "")
+    message_pubkey = str(
+        extensions.get("public_key_pem", body.get("public_key_pem", "") or body.get("pubkey", "") or message.get("pubkey", ""))
+    )
     
     # 执行认证
     response = as_server.authenticate(username, client_addr, message_body, message_hmac, message_sig, message_pubkey)
@@ -70,16 +74,8 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     
     # 构建包含所有必需字段的响应体
     response_body = {
-        "client_id": response.client_id,
-        "encrypted_session_key": response.encrypted_session_key,
-        "client_part": response.encrypted_session_key,
-        "ticket_tgt": response.ticket_tgt,
-        "salt": response.salt,
-        "tgs_host": response.tgs_host,
-        "tgs_port": response.tgs_port,
-        "version": PROTOCOL_VERSION,
-        "request_id": str(uuid.uuid4()),
-        "session_id": response.session_id,
+        "client_part": response.client_part,
+        "extensions": response.extensions,
     }
     return _envelope(message, "AS_C_REP", response_body)
 
@@ -278,7 +274,8 @@ def _handle_session_heartbeat(message: dict, address: tuple[str, int]) -> dict:
     """处理会话心跳消息"""
     body = message.get("body", {})
     username = str(body.get("username", ""))
-    session_id = str(body.get("session_id", ""))
+    extensions = body.get("extensions", {}) if isinstance(body.get("extensions", {}), dict) else {}
+    session_id = str(extensions.get("session_id", body.get("session_id", "")))
     if not username or not session_id:
         return _admin_error(message, "username and session_id are required")
     session = as_server.dao.get_active_session(username, "client")
@@ -308,10 +305,11 @@ def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
         tgs_service = dao.get_service(as_server.TGS_SERVICE)
         if not tgs_service:
             return _admin_error(message, "TGS service is not configured")
-        tgt = decrypt_ticket(message["body"]["ticket_tgt"], tgs_service["service_key"])
+        body = message.get("body", {})
+        tgt = decrypt_ticket(body.get("ticket_tgs", body.get("ticket_tgt", {})), tgs_service["service_key"])
         if not tgt.is_valid():
             return _admin_error(message, f"TGT is expired: {tgt.validity_debug()}")
-        authenticator = decrypt_authenticator(message["body"]["authenticator"], tgt.session_key)
+        authenticator = decrypt_authenticator(body.get("authenticator_c", body.get("authenticator", {})), tgt.session_key)
         if authenticator.client_id != tgt.client_id:
             return _admin_error(message, "authenticator client does not match TGT")
         if authenticator.client_addr and authenticator.client_addr != tgt.client_addr:

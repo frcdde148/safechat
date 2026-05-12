@@ -28,16 +28,24 @@ SafeChat 用于课程设计演示：
 
 admin 管理端不直接访问数据库，只通过服务器管理协议操作。
 
-## 3. Kerberos V4 登录流程
+## 3. Kerberos 六步认证流程
 
-认证前六步不带 HMAC 和 RSA 签名：
+认证前六步不带 HMAC 和 RSA 签名，展示顺序严格按教材组织：
 
-1. `Client -> AS`：`C_AS_REQ`，包含用户名。
-2. `AS -> Client`：`AS_C_REP`，返回用用户长期密钥加密的 `Kc,tgs`，以及用 TGS 服务密钥加密的 `TGT`。
-3. `Client -> TGS`：`C_TGS_REQ`，包含 `TGT` 和用 `Kc,tgs` 加密的 Authenticator。
-4. `TGS -> Client`：`TGS_C_REP`，返回用 `Kc,tgs` 加密的 `Kc,v`，以及用 ChatServer 服务密钥加密的 Service Ticket。
-5. `Client -> ChatServer`：`C_V_REQ`，包含 Service Ticket 和用 `Kc,v` 加密的 Authenticator。
-6. `ChatServer -> Client`：`V_C_REP`，返回用 `Kc,v` 加密的 `timestamp + 1`，完成双向认证。
+### 3.1 认证服务交换：获取 ticket-granting ticket
+
+1. `Client -> AS`：`C_AS_REQ`，请求 `TGT`。
+2. `AS -> Client`：`AS_C_REP`，客户端处理 `AS_REP`，解密并保存 `TGT`。
+
+### 3.2 票据授权服务交换：获取 service-granting ticket
+
+3. `Client -> TGS`：`C_TGS_REQ`，请求 `Service Ticket`。
+4. `TGS -> Client`：`TGS_C_REP`，客户端处理 `TGS_REP`，解密并保存 `Service Ticket`。
+
+### 3.3 客户/服务器认证交换：获得服务
+
+5. `Client -> ChatServer`：`C_V_REQ`，请求服务。
+6. `ChatServer -> Client`：`V_C_REP`，客户端处理 `V_C_REP`，完成双向认证。
 
 密码不直接上传给 AS。客户端用密码和 AS 返回的 salt 派生长期密钥，用来解密 `Kc,tgs`。密码错误时无法解密后续票据。
 

@@ -14,13 +14,14 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 # 导入加密模块
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.rsa_sign import generate_key_pair
 from common.crypto.sha256 import salted_password_hash
-from common.models.tickets import encrypt_model, issue_authenticator
+from common.models.tickets import encrypt_authenticator, encrypt_model, issue_authenticator
 from common.protocol.message import Message
 from common.protocol.security import sign_body
 from common.protocol.socket_io import request
@@ -34,6 +35,7 @@ class AuthClient:
         self.username = payload["username"]
         self.password = payload["password"]
         self.client_type = payload.get("client_type", "client")
+        self.client_addr = payload.get("client_addr", "127.0.0.1")
         
         # 服务器地址配置
         self.as_host, self.as_port = payload["as"]
@@ -59,6 +61,12 @@ class AuthClient:
         self.session_id = ""
         self.salt = ""              # 用户盐值（从AS获取）
         self.client_key = ""        # 用户派生密钥（密码+salt）
+        self.chat_mutual_auth: dict[str, Any] | None = None
+        self.last_authenticator_ts = 0
+        self.as_client_part_plaintext: dict[str, Any] | None = None
+        self.tgs_client_part_plaintext: dict[str, Any] | None = None
+        self.authenticator_tgs_plaintext: dict[str, Any] | None = None
+        self.authenticator_v_plaintext: dict[str, Any] | None = None
         
         # 消息游标（记录已读消息ID，防止重复拉取）
         self.last_message_ids: dict[str, int] = {}
@@ -68,6 +76,14 @@ class AuthClient:
         
         # 离线消息缓存（认证时服务器推送的未读消息）
         self.offline_messages: list[dict] = []
+        
+        # 各步的请求/响应数据（用于分步显示）
+        self.as_request: dict[str, Any] | None = None
+        self.as_response: dict[str, Any] | None = None
+        self.tgs_request: dict[str, Any] | None = None
+        self.tgs_response: dict[str, Any] | None = None
+        self.chat_request: dict[str, Any] | None = None
+        self.chat_response: dict[str, Any] | None = None
 
     def reset_session(self) -> None:
         """重置会话状态，用于重新登录"""
@@ -79,6 +95,12 @@ class AuthClient:
         self.session_id = ""
         self.salt = ""
         self.client_key = ""
+        self.chat_mutual_auth = None
+        self.last_authenticator_ts = 0
+        self.as_client_part_plaintext = None
+        self.tgs_client_part_plaintext = None
+        self.authenticator_tgs_plaintext = None
+        self.authenticator_v_plaintext = None
         self.last_message_ids = {}
         self.offline_messages = []
 
@@ -105,89 +127,119 @@ class AuthClient:
             return False, f"认证阶段失败：{exc}"
 
     def _request_tgt(self) -> str:
-        """步骤1：向AS请求TGT（票据授予票据）
+        """步骤1：Client请求 TGT
         
-        流程：
-        1. 构造请求体（用户名、TGS标识）
-        2. 发送到AS服务器
-        3. 从响应中提取：加密的会话密钥、TGT、salt、TGS地址
-        4. 用密码+salt派生长期密钥Kc
-        5. 用Kc解密会话密钥Kc,tgs
+        公式：C -> AS: ID_C || ID_TGS || TS_1
         """
         body = {
-            "username": self.username,      # 用户名
-            "tgs_id": "tgs_server",        # 请求TGS服务
-            "client_type": self.client_type,
+            "id_c": self.username,          # 用户名
+            "id_tgs": "tgs_server",        # 请求TGS服务
+            "ts_1": self._next_seq_timestamp(),
+            "extensions": {
+                "client_type": self.client_type,
+                "public_key_pem": self.public_key_pem,
+            },
         }
         message = Message(
-            type="C_AS_REQ",               # 请求类型：客户端→AS请求
+            type="C_AS_REQ",               # 请求类型：客户端-》AS请求
             seq=self._next_seq(),
             body=body,
         )
         response = request(self.as_host, self.as_port, message)
         self._raise_on_error(response)
         
+        # 保存请求和响应供后续使用
+        self.as_request = message.to_dict()
+        self.as_response = response
+        
         # 解析响应
-        encrypted_session_key = response["body"].get("client_part", response["body"]["encrypted_session_key"])
-        encrypted_tgt = response["body"]["ticket_tgt"]
-        self.salt = response["body"]["salt"]
+        response_body = response["body"]
+        client_part = response_body["client_part"]
+        extensions = self._extensions(response_body)
+        self.salt = str(extensions.get("salt", ""))
         
         # 用密码派生长期密钥 Kc = SHA256(password + salt)
         self.client_key = salted_password_hash(self.password, self.salt)
         
-        # 保存加密的会话密钥（用于UI展示）
-        self.encrypted_session_key_c_tgs = encrypted_session_key
-        
-        # 解密会话密钥 Kc,tgs（用长期密钥Kc解密）
+        # 保存加密的会话密钥
+        self.encrypted_session_key_c_tgs = client_part
         try:
-            self.session_key_c_tgs = decrypt_text(
-                encrypted_session_key["ciphertext"],
-                encrypted_session_key["iv"],
-                self.client_key,
-            )
+            client_part_plaintext = self._decrypt_client_part(client_part, self.client_key)
         except Exception as exc:
             raise ValueError("密码错误，无法用本地派生的长期密钥 Kc 解密 AS 响应") from exc
+        self.as_client_part_plaintext = client_part_plaintext
+        
+        # 解密会话密钥 Kc,tgs（用长期密钥Kc解密）
+        self.session_key_c_tgs = str(client_part_plaintext.get("k_c_tgs", ""))
+        if not self.session_key_c_tgs:
+            raise ValueError("AS响应未返回标准字段 k_c_tgs")
+        if client_part_plaintext.get("id_tgs") != "tgs_server":
+            raise ValueError("AS响应中的 id_tgs 与请求不匹配")
         
         # 保存状态
-        self.tgt = encrypted_tgt
-        self.tgs_host = response["body"]["tgs_host"]
-        self.tgs_port = int(response["body"]["tgs_port"])
-        self.session_id = response["body"].get("session_id", "")
+        self.tgt = client_part_plaintext.get("ticket_tgs", {})
+        self.tgs_host = str(extensions.get("tgs_host", self.tgs_host))
+        self.tgs_port = int(extensions.get("tgs_port", self.tgs_port))
+        self.session_id = str(extensions.get("session_id", ""))
         
-        return self._format_exchange(message.to_dict(), response)
+        # 仅返回 send 部分
+        return json.dumps(
+            {
+                "公式": "C -> AS: ID_C || ID_TGS || TS_1",
+                "send": self._display_protocol(self.as_request),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _explain_as_response(self) -> str:
-        """步骤2：解释AS响应 - 展示客户端保存的信息"""
-        return self._format_state(
+        """步骤2 AS返回 TGT"""
+        # 从已保存的 AS 响应中提取 extensions
+        as_ext = self._extensions(self.as_response.get("body", {})) if self.as_response else {}
+        return json.dumps(
             {
+                "公式": "AS -> C: E_Kc[K_c,tgs || ID_tgs || TS_2 || LIFETIME_2 || TICKET_tgs]",
+                "receive": self._display_protocol(self.as_response),
+                "plaintext": {
+                    "k_c_tgs": self.session_key_c_tgs,
+                    "id_tgs": self.as_client_part_plaintext.get("id_tgs"),
+                    "ts_2": self.as_client_part_plaintext.get("ts_2"),
+                    "lifetime_2": self.as_client_part_plaintext.get("lifetime_2"),
+                    "ticket_tgs": self._display_protocol(self.as_client_part_plaintext.get("ticket_tgs")),
+                },
                 "client_saved": {
-                    "encrypted_session_key": self.encrypted_session_key_c_tgs,  # 加密的Kc,tgs
-                    "salt": self.salt,                       # 用户盐值
-                    "ticket_tgt": self.tgt,                  # TGT票据
-                    "tgs_server": f"{self.tgs_host}:{self.tgs_port}",  # TGS地址
-                }
-            }
+                    "k_c_tgs": self.session_key_c_tgs,
+                    "salt": self.salt,
+                    "tgs_server": f"{self.tgs_host}:{self.tgs_port}",
+                },
+                "extensions": as_ext,
+            },
+            ensure_ascii=False,
+            indent=2,
         )
 
     def _request_service_ticket(self) -> str:
-        """步骤3：向TGS请求服务票据
+        """步骤3 Client请求 Service Ticket
         
-        流程：
-        1. 用Kc,tgs加密authenticator（包含用户名）
-        2. 发送TGT和authenticator到TGS
-        3. TGS验证TGT和authenticator
-        4. 返回服务票据和新的会话密钥Kc,v
+        公式：C -> TGS: ID_V || Ticket_tgs || Authenticator_c
         """
         if not self.tgt:
             raise ValueError("缺少TGT，请先执行C_AS_REQ步骤")
         
         # 构造authenticator并用Kc,tgs加密
-        authenticator = encrypt_model(issue_authenticator(self.username, ""), self.session_key_c_tgs)
+        auth = issue_authenticator(self.username, self.client_addr)
+        authenticator = encrypt_model(auth, self.session_key_c_tgs)
+        self.authenticator_tgs_plaintext = {
+            "id_c": self.username,
+            "ad_c": self.client_addr,
+            "ts_3": int(auth.timestamp),
+        }
+        self.last_authenticator_ts = int(auth.timestamp)
         
         body = {
-            "service_id": "chat_server",    # 请求聊天服务
-            "ticket_tgt": self.tgt,         # TGT票据
-            "authenticator": authenticator, # 加密的认证器
+            "id_v": "chat_server",          # 请求聊天服务
+            "ticket_tgs": self.tgt,          # TGT票据
+            "authenticator_c": authenticator, # 加密的认证器
         }
         message = Message(
             type="C_TGS_REQ",               # 请求类型：客户端→TGS请求
@@ -197,57 +249,95 @@ class AuthClient:
         response = request(self.tgs_host, self.tgs_port, message)
         self._raise_on_error(response)
         
-        # 解析响应
-        encrypted_session_key = response["body"]["encrypted_session_key"]
+        # 保存请求和响应供后续使用
+        self.tgs_request = message.to_dict()
+        self.tgs_response = response
         
-        # 保存加密的会话密钥（用于UI展示）
-        self.encrypted_session_key_c_v = encrypted_session_key
+        # 解析响应
+        response_body = response["body"]
+        client_part = response_body["client_part"]
+        extensions = self._extensions(response_body)
+        
+        # 保存加密的会话密钥
+        self.encrypted_session_key_c_v = client_part
+        try:
+            client_part_plaintext = self._decrypt_client_part(client_part, self.session_key_c_tgs)
+        except Exception as exc:
+            raise ValueError("无法用 Kc,tgs 解密 TGS 响应") from exc
+        self.tgs_client_part_plaintext = client_part_plaintext
         
         # 用Kc,tgs解密新的会话密钥Kc,v
-        self.session_key_c_v = decrypt_text(
-            encrypted_session_key["ciphertext"],
-            encrypted_session_key["iv"],
-            self.session_key_c_tgs
-        )
+        self.session_key_c_v = str(client_part_plaintext.get("k_c_v", ""))
+        if not self.session_key_c_v:
+            raise ValueError("TGS响应未返回标准字段 k_c_v")
         
         # 保存服务票据和ChatServer地址
-        self.service_ticket = response["body"]["service_ticket"]
-        self.chat_host = response["body"].get("chat_host", self.chat_host)
-        self.chat_port = response["body"].get("chat_port", self.chat_port)
+        if client_part_plaintext.get("id_v") != "chat_server":
+            raise ValueError("TGS响应中的 id_v 与请求不匹配")
+        self.service_ticket = client_part_plaintext.get("ticket_v", {})
+        self.chat_host = str(extensions.get("chat_host", self.chat_host))
+        self.chat_port = int(extensions.get("chat_port", self.chat_port))
         
-        return self._format_exchange(message.to_dict(), response)
+        # 仅返回 send 部分 + authenticator 的结构说明（明文结构）
+        return json.dumps(
+            {
+                "公式": "C -> TGS: ID_V || Ticket_tgs || Authenticator_c",
+                "send": self._display_protocol(self.tgs_request),
+                "authenticator_structure": self.authenticator_tgs_plaintext,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _explain_tgs_response(self) -> str:
-        """步骤4：解释TGS响应 - 展示客户端保存的信息"""
-        return self._format_state(
+        """步骤4 TGS返回 Service Ticket"""
+        # 工程扩展放在最后
+        tgs_ext = self._extensions(self.tgs_response.get("body", {})) if self.tgs_response else {}
+        return json.dumps(
             {
+                "公式": "TGS -> C: E_Kc,tgs[K_c,v || ID_v || TS_4 || LIFETIME_4 || TICKET_v]",
+                "receive": self._display_protocol(self.tgs_response),
+                "plaintext": {
+                    "k_c_v": self.session_key_c_v,
+                    "id_v": self.tgs_client_part_plaintext.get("id_v"),
+                    "ts_4": self.tgs_client_part_plaintext.get("ts_4"),
+                    "lifetime_4": self.tgs_client_part_plaintext.get("lifetime_4"),
+                    "ticket_v": self._display_protocol(self.tgs_client_part_plaintext.get("ticket_v")),
+                },
                 "client_saved": {
-                    "encrypted_session_key": self.encrypted_session_key_c_v,  # 加密的Kc,v
-                    "service_ticket": self.service_ticket,                    # 服务票据
-                    "chat_server": f"{self.chat_host}:{self.chat_port}",      # ChatServer地址
-                }
-            }
+                    "k_c_v": self.session_key_c_v,
+                    "chat_server": f"{self.chat_host}:{self.chat_port}",
+                },
+                "extensions": tgs_ext,
+            },
+            ensure_ascii=False,
+            indent=2,
         )
 
     def _request_chat_auth(self) -> str:
-        """步骤5：向ChatServer请求认证
+        """步骤5 Client请求服务
         
-        流程：
-        1. 用Kc,v加密authenticator
-        2. 发送服务票据和authenticator到ChatServer
-        3. 服务器验证票据和authenticator
-        4. 返回双向认证信息和离线消息
+        公式：C -> V: Ticket_v || Authenticator_c
         """
         if not self.service_ticket:
             raise ValueError("缺少服务票据，请先执行C_TGS_REQ步骤")
         
         # 构造authenticator并用Kc,v加密
-        authenticator = encrypt_model(issue_authenticator(self.username, ""), self.session_key_c_v)
+        auth = issue_authenticator(self.username, self.client_addr)
+        self.last_authenticator_ts = int(auth.timestamp)
+        authenticator = encrypt_authenticator(auth, self.session_key_c_v, timestamp_field="ts_5")
+        self.authenticator_v_plaintext = {
+            "id_c": self.username,
+            "ad_c": self.client_addr,
+            "ts_5": self.last_authenticator_ts,
+        }
         
         body = {
-            "service_ticket": self.service_ticket,  # 服务票据
-            "authenticator": authenticator,        # 加密的认证器
-            "session_id": self.session_id,          # 会话ID（用于AS心跳）
+            "ticket_v": self.service_ticket,        # 服务票据
+            "authenticator_c": authenticator,      # 加密的认证器
+            "extensions": {
+                "session_id": self.session_id,       # 会话ID（用于AS心跳）
+            },
         }
         message = Message(
             type="C_V_REQ",                         # 请求类型：客户端→服务端请求
@@ -257,22 +347,55 @@ class AuthClient:
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)
         
-        # 保存离线消息（认证期间服务器收到的消息）
-        self.offline_messages = response["body"].get("offline_messages", [])
+        # 保存请求和响应供后续使用
+        self.chat_request = message.to_dict()
+        self.chat_response = response
         
-        return self._format_exchange(message.to_dict(), response)
+        # 保存离线消息（认证期间服务器收到的消息）
+        response_body = response["body"]
+        client_part = response_body.get("client_part", {})
+        try:
+            client_part_plaintext = self._decrypt_client_part(client_part, self.session_key_c_v)
+        except Exception as exc:
+            raise ValueError("无法用 Kc,v 解密 V_C_REP 响应") from exc
+        expected_ts = self.last_authenticator_ts + 1
+        if int(client_part_plaintext.get("ts_5_plus_1", -1)) != expected_ts:
+            raise ValueError("V_C_REP 的 ts_5_plus_1 校验失败")
+        self.chat_mutual_auth = client_part_plaintext
+        self.offline_messages = self._extensions(response_body).get("offline_messages", [])
+        
+        # 仅返回 send 部分 + authenticator 的结构说明，extensions 放在尾部
+        chat_req_ext = self._extensions(self.chat_request.get("body", {})) if self.chat_request else {}
+        return json.dumps(
+            {
+                "公式": "C -> V: Ticket_v || Authenticator_c",
+                "send": self._display_protocol(self.chat_request),
+                "authenticator_structure": self.authenticator_v_plaintext,
+                "extensions": chat_req_ext,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _explain_chat_response(self) -> str:
-        """步骤6：解释ChatServer响应 - 双向认证完成"""
-        return self._format_state(
+        """步骤6 Client/Server 相互认证"""
+        chat_ext = self._extensions(self.chat_response.get("body", {})) if self.chat_response else {}
+        return json.dumps(
             {
+                "公式": "V -> C: E_Kc,v[TS_5 + 1]",
+                "receive": self._display_protocol(self.chat_response),
+                "plaintext": {
+                    "ts_5_plus_1": self.chat_mutual_auth.get("ts_5_plus_1"),
+                },
                 "authenticated": True,
-                "room": "public",
-                "message_security": "后续聊天消息使用 Kc,v 加密传输",
-            }
+                "extensions": chat_ext,
+            },
+            ensure_ascii=False,
+            indent=2,
         )
 
     def _next_seq(self) -> int:
+
         """获取下一个消息序列号（线程安全）"""
         value = self.seq
         self.seq += 1
@@ -304,7 +427,7 @@ class AuthClient:
         
         # 2. 构建消息体
         body = {
-            "service_ticket": self.service_ticket,  # 服务票据
+            "ticket_v": self.service_ticket,  # 服务票据
             "message_cipher": message_cipher,       # 加密的消息
             "chat_type": chat_type,                 # 消息类型
             "recipient": recipient,                 # 接收者（私聊）
@@ -320,7 +443,7 @@ class AuthClient:
             body=body,
             hmac=digest,            # HMAC摘要
             sig=signature,          # RSA签名
-            pubkey=self.public_key_pem,  # 公钥（服务器用于验证签名）
+            pubkey="",
         )
         
         # 5. 发送请求
@@ -410,7 +533,7 @@ class AuthClient:
             progress_callback(60, "正在准备发送...")
         
         body = {
-            "service_ticket": self.service_ticket,
+            "ticket_v": self.service_ticket,
             "image_cipher": image_cipher,       # 加密的图片数据
             "file_name": output_name,           # 输出文件名
             "file_size": len(image_data),       # 压缩后大小
@@ -429,7 +552,7 @@ class AuthClient:
             body=body,
             hmac=digest,
             sig=signature,
-            pubkey=self.public_key_pem,
+            pubkey="",
         )
         
         # 步骤7: 发送（超时60秒）
@@ -555,7 +678,7 @@ class AuthClient:
             type="CHAT_POLL",
             seq=self._next_seq(),
             body={
-                "service_ticket": self.service_ticket,
+                "ticket_v": self.service_ticket,
                 "last_seen_id": self.last_message_ids.get(session_key, 0),  # 增量拉取
                 "chat_type": chat_type,
                 "recipient": recipient,
@@ -583,6 +706,8 @@ class AuthClient:
                 "timestamp": item["timestamp"],
                 "text": text,
                 "ciphertext": str(cipher),
+                "hmac": item.get("hmac", ""),
+                "sig": item.get("sig", ""),
             }
             
             # 如果是图片消息，包含图片数据
@@ -643,7 +768,7 @@ class AuthClient:
             type="USER_LIST",
             seq=self._next_seq(),
             body={
-                "service_ticket": self.service_ticket,
+                "ticket_v": self.service_ticket,
             },
         )
         response = request(self.chat_host, self.chat_port, message)
@@ -663,7 +788,9 @@ class AuthClient:
             seq=self._next_seq(),
             body={
                 "username": self.username,
-                "session_id": self.session_id,
+                "extensions": {
+                    "session_id": self.session_id,
+                },
             },
         )
         response = request(self.as_host, self.as_port, message, timeout=3.0)
@@ -723,14 +850,14 @@ class AuthClient:
         if not self.tgt or not self.session_key_c_tgs:
             raise ValueError("缺少TGT，请先完成Kerberos认证")
         
-        authenticator = encrypt_model(issue_authenticator(self.username, ""), self.session_key_c_tgs)
+        authenticator = encrypt_model(issue_authenticator(self.username, self.client_addr), self.session_key_c_tgs)
         
         message = Message(
             type="AS_ADMIN_TOKEN_REQ",
             seq=self._next_seq(),
             body={
-                "ticket_tgt": self.tgt,
-                "authenticator": authenticator,
+                "ticket_tgs": self.tgt,
+                "authenticator_c": authenticator,
             },
         )
         response = request(self.as_host, self.as_port, message, timeout=10.0)
@@ -815,7 +942,7 @@ class AuthClient:
             raise ValueError("聊天会话未认证")
         
         body = {
-            "service_ticket": self.service_ticket,
+            "ticket_v": self.service_ticket,
             **body_fields,
         }
         
@@ -828,7 +955,7 @@ class AuthClient:
             body=body,
             hmac=digest,
             sig=signature,
-            pubkey=self.public_key_pem,
+            pubkey="",
         )
         
         response = request(self.chat_host, self.chat_port, message)
@@ -842,11 +969,39 @@ class AuthClient:
             raise RuntimeError(response["body"].get("error", "未知服务器错误"))
 
     @staticmethod
+    def _extensions(body: dict[str, Any]) -> dict[str, Any]:
+        extensions = body.get("extensions", {})
+        return extensions if isinstance(extensions, dict) else {}
+
+    @staticmethod
+    def _decrypt_client_part(client_part: dict[str, str], secret: str) -> dict[str, Any]:
+        plaintext = decrypt_text(client_part["ciphertext"], client_part["iv"], secret)
+        return json.loads(plaintext)
+
+    @staticmethod
+    def _next_seq_timestamp() -> int:
+        return int(time.time() * 1000)
+
+    @staticmethod
     def _format_exchange(sent: dict[str, Any], received: dict[str, Any]) -> str:
-        """格式化请求/响应为JSON字符串（用于UI展示）"""
-        return json.dumps({"send": sent, "receive": received}, ensure_ascii=False, indent=2)
+        """格式化请求/响应为JSON字符串"""
+        return json.dumps(
+            {"send": AuthClient._display_protocol(sent), "receive": AuthClient._display_protocol(received)},
+            ensure_ascii=False,
+            indent=2,
+        )
 
     @staticmethod
     def _format_state(state: dict[str, Any]) -> str:
         """格式化状态为JSON字符串（用于UI展示）"""
-        return json.dumps(state, ensure_ascii=False, indent=2)
+        return json.dumps(AuthClient._display_protocol(state), ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _display_protocol(value: Any) -> Any:
+        if isinstance(value, dict):
+            if set(value.keys()) == {"ciphertext", "iv"}:
+                return value["ciphertext"]
+            return {key: AuthClient._display_protocol(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [AuthClient._display_protocol(item) for item in value]
+        return value
