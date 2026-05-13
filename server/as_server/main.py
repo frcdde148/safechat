@@ -51,12 +51,9 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     message_body = message.get("body", {})
     message_hmac = message.get("hmac", "")
     message_sig = message.get("sig", "")
-    message_pubkey = str(
-        extensions.get("public_key_pem", body.get("public_key_pem", "") or body.get("pubkey", "") or message.get("pubkey", ""))
-    )
     
     # 执行认证
-    response = as_server.authenticate(username, client_addr, message_body, message_hmac, message_sig, message_pubkey)
+    response = as_server.authenticate(username, client_addr, message_body, message_hmac, message_sig)
     
     if not response.success:
         return {

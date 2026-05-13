@@ -46,7 +46,6 @@ def create_schema(conn: sqlite3.Connection) -> None:
             password_plain TEXT NOT NULL,
             salt TEXT NOT NULL,
             role TEXT DEFAULT 'user',
-            public_key TEXT DEFAULT '',
             created_at INTEGER NOT NULL
         );
 
@@ -151,7 +150,6 @@ def create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_session_revocations_user ON session_revocations(username, status);
         """
     )
-    _ensure_users_public_key_column(conn)
     _ensure_chat_message_security_columns(conn)
 
 
@@ -163,8 +161,8 @@ def seed_auth_users(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT OR IGNORE INTO users
-                (username, password_hash, password_plain, salt, role, public_key, created_at)
-            VALUES (?, ?, ?, ?, ?, '', ?)
+                (username, password_hash, password_plain, salt, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (username, hash_password(password, salt), password, salt, user_role, now),
         )
@@ -177,8 +175,8 @@ def seed_role_users(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT OR IGNORE INTO users
-                (username, password_hash, password_plain, salt, role, public_key, created_at)
-            VALUES (?, '', '', '', ?, '', ?)
+                (username, password_hash, password_plain, salt, role, created_at)
+            VALUES (?, '', '', '', ?, ?)
             """,
             (username, user_role, now),
         )
@@ -230,12 +228,6 @@ def ensure_database(role: str) -> Path:
     path = ROLE_DB_PATHS[role]
     init_database(path, role)
     return path
-
-
-def _ensure_users_public_key_column(conn: sqlite3.Connection) -> None:
-    columns = [row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
-    if "public_key" not in columns:
-        conn.execute("ALTER TABLE users ADD COLUMN public_key TEXT DEFAULT ''")
 
 
 def _ensure_chat_message_security_columns(conn: sqlite3.Connection) -> None:

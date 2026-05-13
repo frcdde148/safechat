@@ -183,7 +183,6 @@ class AuthClient:
             "ts_1": self._next_seq_timestamp(),
             "extensions": {
                 "client_type": self.client_type,
-                "public_key_pem": self.public_key_pem,
             },
         }
         message = Message(
@@ -384,6 +383,7 @@ class AuthClient:
             "authenticator_c": authenticator,      # 加密的认证器
             "extensions": {
                 "session_id": self.session_id,       # 会话ID（用于AS心跳）
+                "public_key_pem": self.public_key_pem,
             },
         }
         message = Message(

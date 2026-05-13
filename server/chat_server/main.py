@@ -19,7 +19,6 @@ from server.simple_tcp_server import serve
 CHAT_SERVICE = "chat_server"  # 聊天服务标识
 
 dao = SQLiteDAO(role="chat")  # 数据库访问对象
-as_dao = SQLiteDAO(role="as")  # AS数据库，用于查询用户名绑定的公钥
 online_lock = threading.Lock()  # 在线用户列表线程锁（多用户同时在线安全）
 online_users: dict[str, dict] = {}  # 在线用户列表 {用户名: {session_id, client_ip, last_seen, status}}
 pubkey_lock = threading.Lock()  # 公钥绑定线程锁
@@ -88,6 +87,11 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     mutual_auth = encrypt_model({"ts_5_plus_1": authenticator.timestamp + 1}, ticket.session_key)
     session_id = str(extensions.get("session_id", body.get("session_id", "")))
     _mark_user_online(ticket.client_id, session_id, address[0])
+    public_key_pem = str(extensions.get("public_key_pem", body.get("public_key_pem", "") or message.get("pubkey", "")) or "")
+    if not public_key_pem:
+        return Message(type="ERROR", seq=message["seq"], body={"error": "client public key is required"})
+    with pubkey_lock:
+        session_pubkeys[_pubkey_scope(ticket.client_id, ticket.session_key)] = public_key_pem
     dao.clear_session_revocations(ticket.client_id)
     
     # 检查离线消息并推送
@@ -197,7 +201,7 @@ def _handle_chat_send(message: dict, address: tuple[str, int]) -> Message:
         message_text=plaintext,
         message_hmac=message.get("hmac", ""),
         message_sig=message.get("sig", ""),
-        message_pubkey=message.get("pubkey", ""),
+        message_pubkey=_session_pubkey(ticket.client_id, ticket.session_key),
         image_data="",
         file_name="",
     )
@@ -271,7 +275,7 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
             message_text=plaintext,
             message_hmac=message.get("hmac", ""),
             message_sig=message.get("sig", ""),
-            message_pubkey=message.get("pubkey", ""),
+            message_pubkey=_session_pubkey(ticket.client_id, ticket.session_key),
             image_data=file_name,
             file_name=file_name,
         )
@@ -310,7 +314,8 @@ def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
     """验证消息的摘要/RSA签名，并将首次登录后的公钥绑定到用户"""
     if not message.get("hmac") or not message.get("sig"):
         return False
-    bound_pubkey = as_dao.get_user_public_key(ticket.client_id)
+    with pubkey_lock:
+        bound_pubkey = session_pubkeys.get(_pubkey_scope(ticket.client_id, ticket.session_key), "")
     if not bound_pubkey:
         return False
     return verify_body_signature(
@@ -319,6 +324,15 @@ def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
         message["sig"],
         bound_pubkey,
     )
+
+
+def _pubkey_scope(username: str, session_key: str) -> str:
+    return f"{username}:{session_key}"
+
+
+def _session_pubkey(username: str, session_key: str) -> str:
+    with pubkey_lock:
+        return session_pubkeys.get(_pubkey_scope(username, session_key), "")
 
 
 def _verify_admin_request(message: dict, ticket) -> bool:

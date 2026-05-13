@@ -24,28 +24,6 @@ class SQLiteDAO:
             row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             return dict(row) if row else None
 
-    def get_user_public_key(self, username: str) -> str:
-        """根据用户名返回 AS 绑定的公钥。"""
-        with self._connect() as conn:
-            row = conn.execute("SELECT public_key FROM users WHERE username = ?", (username,)).fetchone()
-            if not row:
-                return ""
-            return str(row["public_key"] or "")
-
-    def set_user_public_key(self, username: str, public_key_pem: str) -> bool:
-        """绑定或更新用户公钥。"""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE users
-                SET public_key = ?
-                WHERE username = ?
-                """,
-                (public_key_pem, username),
-            )
-            conn.commit()
-            return int(cursor.rowcount) > 0
-
     def list_users(self) -> list[dict[str, Any]]:
         """返回所有已知用户列表，用于联系人展示。"""
         with self._connect() as conn:

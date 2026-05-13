@@ -56,7 +56,6 @@ class AuthenticationServer:
         message_body: dict,
         message_hmac: str = "",
         message_sig: str = "",
-        message_pubkey: str = "",
     ) -> ASResponse:
         """
         用户认证并签发TGT票据
@@ -67,7 +66,6 @@ class AuthenticationServer:
             message_body: 原始消息体用于验证
             message_hmac: 客户端发送的HMAC摘要
             message_sig: 客户端的RSA签名
-            message_pubkey: 客户端的公钥
             
         返回:
             成功时返回包含TGT和加密会话密钥的ASResponse
@@ -77,14 +75,10 @@ class AuthenticationServer:
             return ASResponse(success=False, error="client IP is banned")
 
         extensions = message_body.get("extensions", {}) if isinstance(message_body.get("extensions", {}), dict) else {}
-        public_key_pem = str(message_pubkey or message_body.get("public_key_pem", "") or message_body.get("pubkey", "") or extensions.get("public_key_pem", "") or "")
-        
         user = self.dao.get_user(username)
         if not user:
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "User not found")
             return ASResponse(success=False, error="invalid username or password")
-        if not public_key_pem:
-            return ASResponse(success=False, error="public key is required for binding")
         is_admin_console = (
             extensions.get("client_type", message_body.get("client_type")) == "admin_console"
             and user.get("role") == "admin"
@@ -149,8 +143,6 @@ class AuthenticationServer:
             client_type=session_client_type,
         )
 
-        self.dao.set_user_public_key(username, public_key_pem)
-        
         self._log_audit(session_id, username, client_addr, "LOGIN_AS_OK", 
                         f"User {username} authenticated, TGT issued")
         
