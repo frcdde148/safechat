@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import queue
+from collections import OrderedDict
 
 from PyQt5.QtCore import QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QFont
@@ -39,9 +40,13 @@ class ThumbnailWorker(QThread):
         self._jobs.put((key, image_data))
 
     def stop(self) -> None:
+        if not self.isRunning():
+            return
         self.requestInterruption()
         self._jobs.put(None)
-        self.wait(1000)
+        if not self.wait(1500):
+            self.terminate()
+            self.wait(500)
 
     def run(self) -> None:
         while not self.isInterruptionRequested():
@@ -509,8 +514,7 @@ class ChatView(QWidget):
         self._has_cipher_messages_cache = False
         self._message_batch_depth = 0
         self._pending_cipher_refresh = False
-        self._thumbnail_cache: dict[str, QImage] = {}
-        self._thumbnail_cache_order: list[str] = []
+        self._thumbnail_cache: OrderedDict[str, QImage] = OrderedDict()
         self._thumbnail_waiting: dict[str, list[MessageBubble]] = {}
         self._thumbnail_worker = ThumbnailWorker(self)
         self._thumbnail_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
@@ -687,6 +691,7 @@ class ChatView(QWidget):
         key = self._thumbnail_key(image_data, file_name)
         cached = self._thumbnail_cache.get(key)
         if cached is not None:
+            self._thumbnail_cache.move_to_end(key)
             bubble.set_thumbnail(cached)
             return
         waiters = self._thumbnail_waiting.setdefault(key, [])
@@ -709,12 +714,10 @@ class ChatView(QWidget):
         self._thumbnail_waiting.pop(key, None)
 
     def _remember_thumbnail(self, key: str, image: QImage) -> None:
-        if key not in self._thumbnail_cache:
-            self._thumbnail_cache_order.append(key)
         self._thumbnail_cache[key] = image
-        while len(self._thumbnail_cache_order) > 80:
-            old_key = self._thumbnail_cache_order.pop(0)
-            self._thumbnail_cache.pop(old_key, None)
+        self._thumbnail_cache.move_to_end(key)
+        while len(self._thumbnail_cache) > 80:
+            self._thumbnail_cache.popitem(last=False)
 
     def clear_messages(self) -> None:
         """移除界面上所有显示的消息气泡。"""
@@ -775,8 +778,12 @@ class ChatView(QWidget):
             self.toggle_cipher_button.setToolTip("当前无可切换的密文消息")
 
     def closeEvent(self, event) -> None:
-        self._thumbnail_worker.stop()
+        self.shutdown()
         super().closeEvent(event)
+
+    def shutdown(self) -> None:
+        """停止聊天视图持有的后台线程。"""
+        self._thumbnail_worker.stop()
 
     def current_session(self) -> dict[str, str]:
         """返回当前选中的会话路由信息（群聊或私聊）。"""

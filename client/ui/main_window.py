@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import time
+from collections import OrderedDict
+
 from PyQt5.QtCore import QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QMainWindow, QStackedWidget, QMessageBox
 
@@ -39,10 +42,13 @@ class MainWindow(QMainWindow):
         self._auth_client: AuthClient | None = None  # 认证客户端实例
         self._image_send_threads: list[QThread] = []  # 图片发送线程列表
         self._image_fetch_threads: list[QThread] = []  # 图片历史加载线程列表
+        self._image_fetch_inflight: set[int] = set()   # 正在拉取的图片消息ID
         self._session_load_threads: list[QThread] = []  # 会话切换加载线程列表
         self._session_load_generation = 0             # 会话加载版本号（忽略过期结果）
-        self._image_data_cache: dict[int, tuple[str, str]] = {}  # 已解密图片缓存
+        self._image_data_cache: OrderedDict[int, tuple[str, str]] = OrderedDict()  # 已解密图片缓存
         self._visible_message_ids: set[tuple[str, int]] = set()  # 已显示的消息ID
+        self._user_refresh_thread: QThread | None = None  # 在线用户刷新线程
+        self._last_user_refresh_at = 0.0              # 在线用户最近刷新时间
         self._is_relogin = False                  # 是否正在重新认证
 
         # 定时器
@@ -287,7 +293,7 @@ class MainWindow(QMainWindow):
         
         # 创建异步轮询线程
         class PollThread(QThread):
-            finished = pyqtSignal(list)
+            result_ready = pyqtSignal(list)
             error = pyqtSignal(Exception)
             
             def __init__(self, auth_client, chat_type, recipient):
@@ -299,15 +305,18 @@ class MainWindow(QMainWindow):
             def run(self):
                 try:
                     messages = self.auth_client.poll_chat_messages(self.chat_type, self.recipient)
-                    self.finished.emit(messages)
+                    self.result_ready.emit(messages)
                 except Exception as exc:
                     self.error.emit(exc)
         
         session = self.chat_view.current_session()
-        self._poll_thread = PollThread(self._auth_client, session["chat_type"], session["recipient"])
-        self._poll_thread.finished.connect(self._on_poll_finished)
-        self._poll_thread.error.connect(self._on_poll_error)
-        self._poll_thread.start()
+        thread = PollThread(self._auth_client, session["chat_type"], session["recipient"])
+        self._poll_thread = thread
+        thread.result_ready.connect(self._on_poll_finished)
+        thread.error.connect(self._on_poll_error)
+        thread.finished.connect(lambda: self._clear_poll_thread(thread))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
     
     def _on_poll_finished(self, messages):
         """轮询完成处理"""
@@ -315,8 +324,12 @@ class MainWindow(QMainWindow):
         if messages:
             self.chat_view.heartbeat_status.set_value("刚刚", "okBadge")
             self.chat_view.security_status.set_value("群聊同步正常", "okBadge")
-        self._refresh_online_users()
-        self._poll_thread = None
+        self._refresh_online_users(throttle=True)
+
+    def _clear_poll_thread(self, thread: QThread) -> None:
+        """在线程真正退出后清理轮询线程引用。"""
+        if self._poll_thread is thread:
+            self._poll_thread = None
 
     @staticmethod
     def _is_ticket_expired_error(exc: Exception) -> bool:
@@ -351,28 +364,60 @@ class MainWindow(QMainWindow):
         if self._is_ticket_expired_error(exc):
             self._mark_reauth_required(str(exc))
             self._poll_timer.stop()
-            self._poll_thread = None
             return
         self.chat_view.security_status.set_value("轮询失败", "errorBadge")
         self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
         self._poll_timer.stop()
-        self._poll_thread = None
 
-    def _refresh_online_users(self) -> None:
-        """刷新在线用户列表"""
+    def _refresh_online_users(self, throttle: bool = False) -> None:
+        """后台刷新在线用户列表，避免网络请求阻塞 UI。"""
         if not self._auth_client:
             return
-        try:
-            users = self._auth_client.fetch_online_users()
-        except Exception as exc:
+
+        now = time.monotonic()
+        if throttle and now - self._last_user_refresh_at < 5:
+            return
+        if self._user_refresh_thread and self._user_refresh_thread.isRunning():
+            return
+
+        class UserListThread(QThread):
+            result_ready = pyqtSignal(list)
+            error = pyqtSignal(Exception)
+
+            def __init__(self, auth_client: AuthClient) -> None:
+                super().__init__()
+                self.auth_client = auth_client
+
+            def run(self) -> None:
+                try:
+                    self.result_ready.emit(self.auth_client.fetch_online_users())
+                except Exception as exc:
+                    self.error.emit(exc)
+
+        thread = UserListThread(self._auth_client)
+        self._user_refresh_thread = thread
+
+        def on_finished(users: list[dict]) -> None:
+            self._last_user_refresh_at = time.monotonic()
+            self.chat_view.set_online_users(users)
+
+        def on_error(exc: Exception) -> None:
             if self._is_ticket_expired_error(exc):
                 self._mark_reauth_required(str(exc))
                 self._poll_timer.stop()
                 return
             self.chat_view.security_status.set_value("用户列表异常", "errorBadge")
             self.chat_view.add_message(f"安全提示：刷新在线用户失败，{exc}", "security")
-            return
-        self.chat_view.set_online_users(users)
+
+        def cleanup() -> None:
+            if self._user_refresh_thread is thread:
+                self._user_refresh_thread = None
+
+        thread.result_ready.connect(on_finished)
+        thread.error.connect(on_error)
+        thread.finished.connect(cleanup)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
 
     def _switch_chat_session(self) -> None:
         """切换聊天会话（群聊/私聊）"""
@@ -395,7 +440,7 @@ class MainWindow(QMainWindow):
             return
 
         class SessionLoadThread(QThread):
-            finished = pyqtSignal(str, str, list)
+            result_ready = pyqtSignal(str, str, list)
             error = pyqtSignal(str, str, Exception)
 
             def __init__(self, auth_client: AuthClient, chat_type: str, recipient: str) -> None:
@@ -407,7 +452,7 @@ class MainWindow(QMainWindow):
             def run(self) -> None:
                 try:
                     messages = self.auth_client.poll_chat_messages(self.chat_type, self.recipient)
-                    self.finished.emit(self.chat_type, self.recipient, messages)
+                    self.result_ready.emit(self.chat_type, self.recipient, messages)
                 except Exception as exc:
                     self.error.emit(self.chat_type, self.recipient, exc)
 
@@ -416,8 +461,6 @@ class MainWindow(QMainWindow):
         thread = SessionLoadThread(self._auth_client, chat_type, recipient)
 
         def on_finished(done_type: str, done_recipient: str, messages: list) -> None:
-            if thread in self._session_load_threads:
-                self._session_load_threads.remove(thread)
             if generation != self._session_load_generation:
                 return
             current = self.chat_view.current_session()
@@ -426,8 +469,6 @@ class MainWindow(QMainWindow):
             self._display_chat_messages(messages, include_self=True)
 
         def on_error(done_type: str, done_recipient: str, exc: Exception) -> None:
-            if thread in self._session_load_threads:
-                self._session_load_threads.remove(thread)
             if generation != self._session_load_generation:
                 return
             current = self.chat_view.current_session()
@@ -440,8 +481,14 @@ class MainWindow(QMainWindow):
             self.chat_view.security_status.set_value("轮询失败", "errorBadge")
             self.chat_view.add_message(f"安全提示：拉取{label}消息失败，{exc}", "security")
 
-        thread.finished.connect(on_finished)
+        def cleanup() -> None:
+            if thread in self._session_load_threads:
+                self._session_load_threads.remove(thread)
+
+        thread.result_ready.connect(on_finished)
         thread.error.connect(on_error)
+        thread.finished.connect(cleanup)
+        thread.finished.connect(thread.deleteLater)
         self._session_load_threads.append(thread)
         thread.start()
 
@@ -487,6 +534,7 @@ class MainWindow(QMainWindow):
                 file_name = message.get("file_name", "")
                 if not image_data and message_id in self._image_data_cache:
                     image_data, cached_name = self._image_data_cache[message_id]
+                    self._image_data_cache.move_to_end(message_id)
                     file_name = file_name or cached_name
                 has_image = bool(message.get("has_image") or image_data or file_name)
                 username = message.get("sender") or self._auth_client.username
@@ -514,9 +562,11 @@ class MainWindow(QMainWindow):
         """后台拉取单条图片正文，避免阻塞会话消息列表。"""
         if not self._auth_client:
             return
+        if message_id in self._image_data_cache or message_id in self._image_fetch_inflight:
+            return
 
         class ImageFetchThread(QThread):
-            finished = pyqtSignal(int, str, str)
+            result_ready = pyqtSignal(int, str, str)
             error = pyqtSignal(int, Exception)
 
             def __init__(self, auth_client: AuthClient, message_id: int) -> None:
@@ -527,26 +577,74 @@ class MainWindow(QMainWindow):
             def run(self) -> None:
                 try:
                     result = self.auth_client.fetch_message_image(self.message_id)
-                    self.finished.emit(self.message_id, result["image_data"], result.get("file_name", ""))
+                    self.result_ready.emit(self.message_id, result["image_data"], result.get("file_name", ""))
                 except Exception as exc:
                     self.error.emit(self.message_id, exc)
 
+        self._image_fetch_inflight.add(message_id)
         thread = ImageFetchThread(self._auth_client, message_id)
 
         def on_finished(done_id: int, image_data: str, done_file_name: str) -> None:
-            if thread in self._image_fetch_threads:
-                self._image_fetch_threads.remove(thread)
-            self._image_data_cache[done_id] = (image_data, done_file_name or file_name)
-            self.chat_view.set_message_image(bubble, image_data, done_file_name or file_name)
+            display_name = done_file_name or file_name
+            self._remember_image_data(done_id, image_data, display_name)
+            self.chat_view.set_message_image(bubble, image_data, display_name)
 
         def on_error(done_id: int, exc: Exception) -> None:
+            pass
+
+        def cleanup() -> None:
             if thread in self._image_fetch_threads:
                 self._image_fetch_threads.remove(thread)
+            self._image_fetch_inflight.discard(message_id)
 
-        thread.finished.connect(on_finished)
+        thread.result_ready.connect(on_finished)
         thread.error.connect(on_error)
+        thread.finished.connect(cleanup)
+        thread.finished.connect(thread.deleteLater)
         self._image_fetch_threads.append(thread)
         thread.start()
+
+    def _remember_image_data(self, message_id: int, image_data: str, file_name: str) -> None:
+        """缓存已解密图片正文，限制内存占用。"""
+        self._image_data_cache[message_id] = (image_data, file_name)
+        self._image_data_cache.move_to_end(message_id)
+        while len(self._image_data_cache) > 60:
+            self._image_data_cache.popitem(last=False)
+
+    def closeEvent(self, event) -> None:
+        """关闭窗口前停止后台线程，避免 QThread 析构时仍在运行。"""
+        self._poll_timer.stop()
+        self._stage_timer.stop()
+        self._session_load_generation += 1
+        self.chat_view.shutdown()
+
+        threads: list[QThread] = []
+        poll_thread = getattr(self, "_poll_thread", None)
+        if poll_thread:
+            threads.append(poll_thread)
+        if self._user_refresh_thread:
+            threads.append(self._user_refresh_thread)
+        threads.extend(self._session_load_threads)
+        threads.extend(self._image_fetch_threads)
+        threads.extend(self._image_send_threads)
+
+        seen: set[int] = set()
+        active_threads: list[QThread] = []
+        for thread in threads:
+            thread_id = id(thread)
+            if thread_id in seen:
+                continue
+            seen.add(thread_id)
+            if thread.isRunning():
+                active_threads.append(thread)
+                thread.requestInterruption()
+
+        for thread in active_threads:
+            if not thread.wait(3000):
+                thread.terminate()
+                thread.wait(1000)
+
+        super().closeEvent(event)
 
     def _view_session_key(self, chat_type: str = "group", recipient: str = "") -> str:
         """生成视图会话唯一标识"""
@@ -700,7 +798,7 @@ class MainWindow(QMainWindow):
         
         # 创建异步发送线程（避免阻塞UI）
         class ImageSendThread(QThread):
-            finished = pyqtSignal(dict)
+            result_ready = pyqtSignal(dict)
             error = pyqtSignal(Exception)
             progress = pyqtSignal(int, str)
             preview_ready = pyqtSignal(str, str)
@@ -723,7 +821,7 @@ class MainWindow(QMainWindow):
                         recipient=self.recipient,
                         preview_callback=self.preview_ready.emit,
                     )
-                    self.finished.emit(result)
+                    self.result_ready.emit(result)
                 except Exception as exc:
                     self.error.emit(exc)
 
@@ -771,8 +869,6 @@ class MainWindow(QMainWindow):
             finally:
                 self.chat_view.hide_upload_progress()
                 self.chat_view.image_button.setEnabled(True)
-                if thread in self._image_send_threads:
-                    self._image_send_threads.remove(thread)
         
         def on_send_error(exc):
             try:
@@ -782,8 +878,10 @@ class MainWindow(QMainWindow):
             finally:
                 self.chat_view.hide_upload_progress()
                 self.chat_view.image_button.setEnabled(True)
-                if thread in self._image_send_threads:
-                    self._image_send_threads.remove(thread)
+
+        def cleanup_send_thread() -> None:
+            if thread in self._image_send_threads:
+                self._image_send_threads.remove(thread)
         
         # 启动发送线程
         self.chat_view.set_upload_progress(30, "正在初始化...")
@@ -795,9 +893,11 @@ class MainWindow(QMainWindow):
             session["chat_type"],
             session["recipient"],
         )
-        thread.finished.connect(on_send_finished)
+        thread.result_ready.connect(on_send_finished)
         thread.error.connect(on_send_error)
         thread.progress.connect(self.chat_view.set_upload_progress)
         thread.preview_ready.connect(on_preview_ready)
+        thread.finished.connect(cleanup_send_thread)
+        thread.finished.connect(thread.deleteLater)
         self._image_send_threads.append(thread)
         thread.start()

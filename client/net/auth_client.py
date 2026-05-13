@@ -191,7 +191,7 @@ class AuthClient:
             seq=self._next_seq(),
             body=body,
         )
-        response = request(self.as_host, self.as_port, message)
+        response = request(self.as_host, self.as_port, message, timeout=10.0)
         self._raise_on_error(response)
         
         # 保存请求和响应供后续使用
@@ -292,7 +292,7 @@ class AuthClient:
             seq=self._next_seq(),
             body=body,
         )
-        response = request(self.tgs_host, self.tgs_port, message)
+        response = request(self.tgs_host, self.tgs_port, message, timeout=10.0)
         self._raise_on_error(response)
         
         # 保存请求和响应供后续使用
@@ -397,7 +397,7 @@ class AuthClient:
             seq=self._next_seq(),
             body=body,
         )
-        response = request(self.chat_host, self.chat_port, message)
+        response = request(self.chat_host, self.chat_port, message, timeout=10.0)
         self._raise_on_error(response)
         
         # 保存请求和响应供后续使用
@@ -499,7 +499,7 @@ class AuthClient:
         )
         
         # 5. 发送请求
-        response = request(self.chat_host, self.chat_port, message)
+        response = request(self.chat_host, self.chat_port, message, timeout=10.0)
         self._raise_on_error(response)
         
         # 6. 更新消息游标（防止重复拉取）
@@ -858,7 +858,7 @@ class AuthClient:
             hmac=digest,
             sig=signature,
         )
-        response = request(self.chat_host, self.chat_port, message)
+        response = request(self.chat_host, self.chat_port, message, timeout=5.0)
         self._raise_on_error(response)
         return response["body"].get("users", [])
 
@@ -1047,7 +1047,7 @@ class AuthClient:
             sig=signature,
         )
         
-        response = request(self.chat_host, self.chat_port, message)
+        response = request(self.chat_host, self.chat_port, message, timeout=10.0)
         self._raise_on_error(response)
         return response["body"]
 
