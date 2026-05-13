@@ -35,7 +35,10 @@ class AuthClient:
         self.username = payload["username"]
         self.password = payload["password"]
         self.client_type = payload.get("client_type", "client")
-        self.client_addr = payload.get("client_addr", "127.0.0.1")
+        # 如果没有显式传入 client_addr，则尝试推断出站地址以与服务器看到的地址匹配
+        self.client_addr = payload.get("client_addr", "")
+        self.tgt_client_addr = ""  # 从 TGT 中保存的客户端地址（步骤3使用）
+        self.service_ticket_client_addr = ""  # 从服务票据中保存的客户端地址（步骤5使用）
         
         # 服务器地址配置
         self.as_host, self.as_port = payload["as"]
@@ -71,8 +74,50 @@ class AuthClient:
         # 消息游标（记录已读消息ID，防止重复拉取）
         self.last_message_ids: dict[str, int] = {}
         
-        # RSA密钥对（登录后签名用）
+        # RSA密钥对
         self.private_key_pem, self.public_key_pem = generate_key_pair()
+
+        # 在构造完成后，如果仍未设置 client_addr，尝试通过临时 UDP socket 推断本地出站 IP
+        if not self.client_addr:
+            try:
+                import socket
+
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # 不需要真正发送数据，仅用于确定本地连接地址
+                # 首先尝试连接 AS 以获取出站地址
+                try:
+                    s.connect((self.as_host, int(self.as_port)))
+                    candidate = s.getsockname()[0]
+                except Exception:
+                    candidate = ""
+
+                # 如果候选地址为空或是回环地址，则尝试其它常见获取方法
+                if not candidate or candidate.startswith("127.") or candidate == "0.0.0.0":
+                    try:
+                        candidate = socket.gethostbyname(socket.gethostname())
+                    except Exception:
+                        candidate = candidate or ""
+
+                # 更进一步地尝试获取非回环地址列表
+                if not candidate or candidate.startswith("127."):
+                    try:
+                        host_info = socket.gethostbyname_ex(socket.gethostname())
+                        for ip in host_info[2]:
+                            if ip and not ip.startswith("127.") and not ip.startswith("0."):
+                                candidate = ip
+                                break
+                    except Exception:
+                        pass
+
+                self.client_addr = candidate or ""
+            except Exception:
+                # 回退到回环地址
+                self.client_addr = ""
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
         
         # 离线消息缓存（认证时服务器推送的未读消息）
         self.offline_messages: list[dict] = []
@@ -95,6 +140,8 @@ class AuthClient:
         self.session_id = ""
         self.salt = ""
         self.client_key = ""
+        self.tgt_client_addr = ""
+        self.service_ticket_client_addr = ""
         self.chat_mutual_auth = None
         self.last_authenticator_ts = 0
         self.as_client_part_plaintext = None
@@ -128,7 +175,6 @@ class AuthClient:
 
     def _request_tgt(self) -> str:
         """步骤1：Client请求 TGT
-        
         公式：C -> AS: ID_C || ID_TGS || TS_1
         """
         body = {
@@ -178,11 +224,13 @@ class AuthClient:
         
         # 保存状态
         self.tgt = client_part_plaintext.get("ticket_tgs", {})
-        self.tgs_host = str(extensions.get("tgs_host", self.tgs_host))
-        self.tgs_port = int(extensions.get("tgs_port", self.tgs_port))
+        # 保存 TGT 中的客户端地址，用于步骤3中的认证器（确保与 TGS 验证一致）
+        self.tgt_client_addr = str(client_part_plaintext.get("ad_c", self.client_addr))
+        self.tgs_host = str(client_part_plaintext.get("tgs_host", self.tgs_host))
+        self.tgs_port = int(client_part_plaintext.get("tgs_port", self.tgs_port))
         self.session_id = str(extensions.get("session_id", ""))
         
-        # 仅返回 send 部分
+        # 仅返回send 部分
         return json.dumps(
             {
                 "公式": "C -> AS: ID_C || ID_TGS || TS_1",
@@ -193,7 +241,7 @@ class AuthClient:
         )
 
     def _explain_as_response(self) -> str:
-        """步骤2 AS返回 TGT"""
+        """步骤 2 AS 返回 TGT"""
         # 从已保存的 AS 响应中提取 extensions
         as_ext = self._extensions(self.as_response.get("body", {})) if self.as_response else {}
         return json.dumps(
@@ -206,11 +254,8 @@ class AuthClient:
                     "ts_2": self.as_client_part_plaintext.get("ts_2"),
                     "lifetime_2": self.as_client_part_plaintext.get("lifetime_2"),
                     "ticket_tgs": self._display_protocol(self.as_client_part_plaintext.get("ticket_tgs")),
-                },
-                "client_saved": {
-                    "k_c_tgs": self.session_key_c_tgs,
-                    "salt": self.salt,
-                    "tgs_server": f"{self.tgs_host}:{self.tgs_port}",
+                    "tgs_host": self.as_client_part_plaintext.get("tgs_host"),
+                    "tgs_port": self.as_client_part_plaintext.get("tgs_port"),
                 },
                 "extensions": as_ext,
             },
@@ -227,11 +272,12 @@ class AuthClient:
             raise ValueError("缺少TGT，请先执行C_AS_REQ步骤")
         
         # 构造authenticator并用Kc,tgs加密
-        auth = issue_authenticator(self.username, self.client_addr)
+        # 使用 TGT 中保存的客户端地址，而非重新推断的地址，确保与 TGS 验证一致
+        auth = issue_authenticator(self.username, self.tgt_client_addr or self.client_addr)
         authenticator = encrypt_model(auth, self.session_key_c_tgs)
         self.authenticator_tgs_plaintext = {
             "id_c": self.username,
-            "ad_c": self.client_addr,
+            "ad_c": self.tgt_client_addr or self.client_addr,
             "ts_3": int(auth.timestamp),
         }
         self.last_authenticator_ts = int(auth.timestamp)
@@ -275,8 +321,10 @@ class AuthClient:
         if client_part_plaintext.get("id_v") != "chat_server":
             raise ValueError("TGS响应中的 id_v 与请求不匹配")
         self.service_ticket = client_part_plaintext.get("ticket_v", {})
-        self.chat_host = str(extensions.get("chat_host", self.chat_host))
-        self.chat_port = int(extensions.get("chat_port", self.chat_port))
+        # 保存服务票据中的客户端地址，用于步骤5中的认证器（确保与 ChatServer 验证一致）
+        self.service_ticket_client_addr = str(client_part_plaintext.get("ad_c", self.tgt_client_addr or self.client_addr))
+        self.chat_host = str(client_part_plaintext.get("chat_host", self.chat_host))
+        self.chat_port = int(client_part_plaintext.get("chat_port", self.chat_port))
         
         # 仅返回 send 部分 + authenticator 的结构说明（明文结构）
         return json.dumps(
@@ -290,7 +338,7 @@ class AuthClient:
         )
 
     def _explain_tgs_response(self) -> str:
-        """步骤4 TGS返回 Service Ticket"""
+        """步骤 4 TGS 返回 Service Ticket"""
         # 工程扩展放在最后
         tgs_ext = self._extensions(self.tgs_response.get("body", {})) if self.tgs_response else {}
         return json.dumps(
@@ -303,10 +351,8 @@ class AuthClient:
                     "ts_4": self.tgs_client_part_plaintext.get("ts_4"),
                     "lifetime_4": self.tgs_client_part_plaintext.get("lifetime_4"),
                     "ticket_v": self._display_protocol(self.tgs_client_part_plaintext.get("ticket_v")),
-                },
-                "client_saved": {
-                    "k_c_v": self.session_key_c_v,
-                    "chat_server": f"{self.chat_host}:{self.chat_port}",
+                    "chat_host": self.tgs_client_part_plaintext.get("chat_host"),
+                    "chat_port": self.tgs_client_part_plaintext.get("chat_port"),
                 },
                 "extensions": tgs_ext,
             },
@@ -323,12 +369,13 @@ class AuthClient:
             raise ValueError("缺少服务票据，请先执行C_TGS_REQ步骤")
         
         # 构造authenticator并用Kc,v加密
-        auth = issue_authenticator(self.username, self.client_addr)
+        # 使用服务票据中保存的客户端地址，而非重新推断的地址，确保与 ChatServer 验证一致
+        auth = issue_authenticator(self.username, self.service_ticket_client_addr or self.client_addr)
         self.last_authenticator_ts = int(auth.timestamp)
         authenticator = encrypt_authenticator(auth, self.session_key_c_v, timestamp_field="ts_5")
         self.authenticator_v_plaintext = {
             "id_c": self.username,
-            "ad_c": self.client_addr,
+            "ad_c": self.service_ticket_client_addr or self.client_addr,
             "ts_5": self.last_authenticator_ts,
         }
         
@@ -503,7 +550,7 @@ class AuthClient:
         if not self.service_ticket or not self.session_key_c_v:
             raise ValueError("聊天会话未认证")
         
-        # 步骤1: 读取并压缩图片（大图片经过Base64+JSON+DES后会很慢）
+        # 步骤1: 读取并压缩图片
         # 所以限制在实用的显示尺寸
         if progress_callback:
             progress_callback(35, "正在压缩图片...")
@@ -1001,7 +1048,18 @@ class AuthClient:
         if isinstance(value, dict):
             if set(value.keys()) == {"ciphertext", "iv"}:
                 return value["ciphertext"]
-            return {key: AuthClient._display_protocol(item) for key, item in value.items()}
+            out: dict[str, Any] = {}
+            for key, item in value.items():
+                disp = AuthClient._display_protocol(item)
+                # 移除空字符串或空容器的字段（如 sid, hmac, pubkey）以便展示更清晰
+                if disp == "" or disp is None:
+                    continue
+                if isinstance(disp, dict) and not disp:
+                    continue
+                if isinstance(disp, list) and not disp:
+                    continue
+                out[key] = disp
+            return out
         if isinstance(value, list):
             return [AuthClient._display_protocol(item) for item in value]
         return value

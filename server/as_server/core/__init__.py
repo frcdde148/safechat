@@ -76,7 +76,8 @@ class AuthenticationServer:
             self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP banned")
             return ASResponse(success=False, error="client IP is banned")
 
-        public_key_pem = str(message_pubkey or message_body.get("public_key_pem", "") or message_body.get("pubkey", "") or "")
+        extensions = message_body.get("extensions", {}) if isinstance(message_body.get("extensions", {}), dict) else {}
+        public_key_pem = str(message_pubkey or message_body.get("public_key_pem", "") or message_body.get("pubkey", "") or extensions.get("public_key_pem", "") or "")
         
         user = self.dao.get_user(username)
         if not user:
@@ -84,8 +85,6 @@ class AuthenticationServer:
             return ASResponse(success=False, error="invalid username or password")
         if not public_key_pem:
             return ASResponse(success=False, error="public key is required for binding")
-        
-        extensions = message_body.get("extensions", {}) if isinstance(message_body.get("extensions", {}), dict) else {}
         is_admin_console = (
             extensions.get("client_type", message_body.get("client_type")) == "admin_console"
             and user.get("role") == "admin"
@@ -126,9 +125,12 @@ class AuthenticationServer:
                 {
                     "k_c_tgs": session_key,
                     "id_tgs": self.TGS_SERVICE,
+                    "ad_c": client_addr,
                     "ts_2": tgt.issued_at,
                     "lifetime_2": tgt.expires_at,
                     "ticket_tgs": encrypted_tgt,
+                    "tgs_host": tgs_service["service_host"],
+                    "tgs_port": tgs_service["service_port"],
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -157,8 +159,6 @@ class AuthenticationServer:
             client_part=client_part,
             extensions={
                 "salt": user["salt"],
-                "tgs_host": tgs_service["service_host"],
-                "tgs_port": tgs_service["service_port"],
                 "version": self.PROTOCOL_VERSION,
                 "request_id": str(uuid.uuid4()),
                 "session_id": session_id,
@@ -186,7 +186,6 @@ class AuthenticationServer:
     
     def _log_audit(self, session_id: str, user_id: str, client_ip: str, 
                    action_type: str, content: str) -> None:
-        """记录审计事件，内容使用AES加密并使用RSA签名"""
         encrypted_content = encrypt_text(content, self.AS_SECRET_KEY)
         content_digest = body_digest({"content": content, "action_type": action_type})
         content_signature = sign_text(content_digest, self._private_key)

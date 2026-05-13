@@ -96,10 +96,17 @@ class TicketGrantingServer:
                 return TGSResponse(success=False, error="Authenticator client does not match TGT")
             
             # 如果Authenticator中包含IP，则验证客户端IP
-            if auth.client_addr and auth.client_addr != tgt.client_addr:
-                self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", 
-                               "Authenticator IP mismatch")
-                return TGSResponse(success=False, error="Authenticator address does not match TGT")
+            # 允许回环地址和本地地址匹配（适应开发环境）
+            if auth.client_addr and tgt.client_addr:
+                # 如果两个地址都是回环地址，则认为匹配
+                auth_is_local = auth.client_addr.startswith("127.") or auth.client_addr == "::1"
+                tgt_is_local = tgt.client_addr.startswith("127.") or tgt.client_addr == "::1"
+                if auth_is_local and tgt_is_local:
+                    pass  # 都是本地地址，跳过验证
+                elif auth.client_addr != tgt.client_addr:
+                    self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", 
+                                   "Authenticator IP mismatch")
+                    return TGSResponse(success=False, error="Authenticator address does not match TGT")
             
             # 生成客户端与ChatServer通信的新会话密钥
             session_key_c_v = secrets.token_hex(16)
@@ -113,15 +120,18 @@ class TicketGrantingServer:
             )
             encrypted_service_ticket = encrypt_model(service_ticket, chat_service["service_key"])
             
-            # 使用Kc,tgs(TGT中的会话密钥)加密session_key_c_v
+            # 使用 Kc,tgs(TGT 中的会话密钥) 加密 session_key_c_v
             client_part = encrypt_text(
                 json.dumps(
                     {
                         "k_c_v": session_key_c_v,
                         "id_v": self.CHAT_SERVICE,
+                        "ad_c": tgt.client_addr,
                         "ts_4": service_ticket.issued_at,
                         "lifetime_4": service_ticket.expires_at,
                         "ticket_v": encrypted_service_ticket,
+                        "chat_host": chat_service["service_host"],
+                        "chat_port": chat_service["service_port"],
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -137,8 +147,6 @@ class TicketGrantingServer:
                 success=True,
                 client_part=client_part,
                 extensions={
-                    "chat_host": chat_service["service_host"],
-                    "chat_port": chat_service["service_port"],
                     "version": self.PROTOCOL_VERSION,
                     "request_id": str(uuid.uuid4()),
                 },
