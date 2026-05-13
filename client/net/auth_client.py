@@ -384,6 +384,7 @@ class AuthClient:
             "authenticator_c": authenticator,      # 加密的认证器
             "extensions": {
                 "session_id": self.session_id,       # 会话ID（用于AS心跳）
+                "public_key_pem": self.public_key_pem,  # RSA公钥（供ChatServer本地绑定）
             },
         }
         message = Message(
@@ -490,7 +491,7 @@ class AuthClient:
             body=body,
             hmac=digest,            # HMAC摘要
             sig=signature,          # RSA签名
-            pubkey="",
+            pubkey=self.public_key_pem,  # 公钥（兜底：Chat Server 无本地缓存时使用）
         )
         
         # 5. 发送请求
@@ -599,7 +600,7 @@ class AuthClient:
             body=body,
             hmac=digest,
             sig=signature,
-            pubkey="",
+            pubkey=self.public_key_pem,
         )
         
         # 步骤7: 发送（超时60秒）
@@ -1002,7 +1003,7 @@ class AuthClient:
             body=body,
             hmac=digest,
             sig=signature,
-            pubkey="",
+            pubkey=self.public_key_pem,
         )
         
         response = request(self.chat_host, self.chat_port, message)

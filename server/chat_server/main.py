@@ -89,6 +89,13 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
     session_id = str(extensions.get("session_id", body.get("session_id", "")))
     _mark_user_online(ticket.client_id, session_id, address[0])
     dao.clear_session_revocations(ticket.client_id)
+
+    # 绑定客户端公钥到本地缓存（支持分布式部署：AS与ChatServer不在同一机器时的备用来源）
+    client_pubkey = str(extensions.get("public_key_pem", "") or "")
+    if client_pubkey:
+        with pubkey_lock:
+            session_pubkeys[ticket.client_id] = client_pubkey
+        dao.set_user_public_key(ticket.client_id, client_pubkey)
     
     # 检查离线消息并推送
     offline_messages = dao.get_offline_messages(ticket.client_id)
@@ -310,7 +317,15 @@ def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
     """验证消息的摘要/RSA签名，并将首次登录后的公钥绑定到用户"""
     if not message.get("hmac") or not message.get("sig"):
         return False
-    bound_pubkey = as_dao.get_user_public_key(ticket.client_id)
+    # 优先使用认证时本地缓存的公钥（支持分布式部署）
+    with pubkey_lock:
+        bound_pubkey = session_pubkeys.get(ticket.client_id, "")
+    # 回退到 Chat 数据库（认证时已持久化，进程重启后仍有效）
+    if not bound_pubkey:
+        bound_pubkey = dao.get_user_public_key(ticket.client_id)
+    # 再回退到 AS 数据库（单机部署时可用）
+    if not bound_pubkey:
+        bound_pubkey = as_dao.get_user_public_key(ticket.client_id)
     if not bound_pubkey:
         return False
     return verify_body_signature(
