@@ -71,14 +71,14 @@ class AuthenticationServer:
             成功时返回包含TGT和加密会话密钥的ASResponse
         """
         if self.dao.is_ip_banned(client_addr):
-            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP banned")
-            return ASResponse(success=False, error="client IP is banned")
+            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "IP 已封禁")
+            return ASResponse(success=False, error="当前 IP 已被封禁")
 
         extensions = message_body.get("extensions", {}) if isinstance(message_body.get("extensions", {}), dict) else {}
         user = self.dao.get_user(username)
         if not user:
-            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "User not found")
-            return ASResponse(success=False, error="invalid username or password")
+            self._log_audit("", username or "unknown", client_addr, "LOGIN_FAILED", "用户名或密码错误")
+            return ASResponse(success=False, error="用户名或密码错误")
         is_admin_console = (
             extensions.get("client_type", message_body.get("client_type")) == "admin_console"
             and user.get("role") == "admin"
@@ -98,16 +98,16 @@ class AuthenticationServer:
                     username,
                     client_addr,
                     "LOGIN_DENIED_DUPLICATE",
-                    f"User {username} already logged in from {existing_ip}",
+                    f"用户 {username} 已从 {existing_ip} 登录",
                 )
                 return ASResponse(
                     success=False,
-                    error=f"user {username} is already logged in from {existing_ip}",
+                    error=f"用户 {username} 已从 {existing_ip} 登录",
                 )
             self.dao.invalidate_session(existing_session["session_id"])
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         if not tgs_service:
-            return ASResponse(success=False, error="TGS service is not configured")
+            return ASResponse(success=False, error="TGS 服务未配置")
         
         session_key = secrets.token_hex(16)
         tgt = self._issue_tgt(username, client_addr, session_key)

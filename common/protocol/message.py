@@ -29,7 +29,6 @@ class Message:
     nonce: str = field(default_factory=lambda: os.urandom(NONCE_BYTES).hex())
     hmac: str = ""
     sig: str = ""
-    pubkey: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """返回可 JSON 序列化的字典。"""
@@ -62,7 +61,7 @@ def from_json(raw: str | bytes) -> dict[str, Any]:
 
 def validate_message(message: dict[str, Any]) -> None:
     """路由前验证公共封装字段。"""
-    required = {"v", "type", "seq", "sid", "ts", "nonce", "body", "hmac", "sig", "pubkey"}
+    required = {"v", "type", "seq", "sid", "ts", "nonce", "body", "hmac", "sig"}
     missing = required - message.keys()
     if missing:
         raise ValueError(f"missing protocol field(s): {sorted(missing)}")
@@ -82,6 +81,6 @@ def validate_message(message: dict[str, Any]) -> None:
     int(message["nonce"], 16)
     if not isinstance(message["body"], dict):
         raise ValueError("body must be an object")
-    for field_name in ("hmac", "sig", "pubkey"):
+    for field_name in ("hmac", "sig"):
         if not isinstance(message[field_name], str):
             raise ValueError(f"{field_name} must be a string")

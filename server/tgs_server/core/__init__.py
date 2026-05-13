@@ -48,7 +48,7 @@ class TicketGrantingServer:
     
     def request_service_ticket(self, ticket_tgt: dict[str, str], authenticator: dict[str, str], 
                                client_addr: str, message_body: dict, message_hmac: str, 
-                               message_sig: str, message_pubkey: str) -> TGSResponse:
+                               message_sig: str) -> TGSResponse:
         """
         处理C_TGS_REQ请求: 验证TGT和Authenticator，签发服务票据
         
@@ -59,7 +59,6 @@ class TicketGrantingServer:
             message_body: 原始消息体用于验证
             message_hmac: 客户端发送的HMAC摘要
             message_sig: 客户端的RSA签名
-            message_pubkey: 客户端的公钥
             
         返回:
             成功时返回包含服务票据和会话密钥的TGSResponse
@@ -69,12 +68,12 @@ class TicketGrantingServer:
         chat_service = self.dao.get_service(self.CHAT_SERVICE)
         
         if not tgs_service:
-            self._log_audit("", "unknown", client_addr, "TGS_ERROR", "TGS service not configured")
-            return TGSResponse(success=False, error="TGS service not configured")
+            self._log_audit("", "unknown", client_addr, "TGS_ERROR", "TGS 服务未配置")
+            return TGSResponse(success=False, error="TGS 服务未配置")
         
         if not chat_service:
-            self._log_audit("", "unknown", client_addr, "TGS_ERROR", "Chat service not configured")
-            return TGSResponse(success=False, error="Chat service not configured")
+            self._log_audit("", "unknown", client_addr, "TGS_ERROR", "ChatServer 服务未配置")
+            return TGSResponse(success=False, error="ChatServer 服务未配置")
         
         try:
             # 使用TGS密钥解密TGT
@@ -83,8 +82,8 @@ class TicketGrantingServer:
             # 验证TGT有效期
             if not tgt.is_valid():
                 debug = tgt.validity_debug()
-                self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", f"TGT expired: {debug}")
-                return TGSResponse(success=False, error=f"TGT has expired: {debug}")
+                self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", f"TGT 已过期：{debug}")
+                return TGSResponse(success=False, error=f"TGT 已过期：{debug}")
             
             # 使用TGT中的会话密钥解密Authenticator
             auth = decrypt_authenticator(authenticator, tgt.session_key)
@@ -92,8 +91,8 @@ class TicketGrantingServer:
             # 验证Authenticator客户端ID与TGT匹配
             if auth.client_id != tgt.client_id:
                 self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", 
-                               "Authenticator client ID mismatch")
-                return TGSResponse(success=False, error="Authenticator client does not match TGT")
+                               "认证器用户与 TGT 不匹配")
+                return TGSResponse(success=False, error="认证器用户与 TGT 不匹配")
             
             # 如果Authenticator中包含IP，则验证客户端IP
             # 允许回环地址和本地地址匹配（适应开发环境）
@@ -105,8 +104,8 @@ class TicketGrantingServer:
                     pass  # 都是本地地址，跳过验证
                 elif auth.client_addr != tgt.client_addr:
                     self._log_audit("", tgt.client_id, client_addr, "TGS_ERROR", 
-                                   "Authenticator IP mismatch")
-                    return TGSResponse(success=False, error="Authenticator address does not match TGT")
+                                   "认证器地址与 TGT 不匹配")
+                    return TGSResponse(success=False, error="认证器地址与 TGT 不匹配")
             
             # 生成客户端与ChatServer通信的新会话密钥
             session_key_c_v = secrets.token_hex(16)
@@ -153,8 +152,8 @@ class TicketGrantingServer:
             )
             
         except Exception as e:
-            self._log_audit("", "unknown", client_addr, "TGS_ERROR", f"Decryption/validation failed: {str(e)}")
-            return TGSResponse(success=False, error=f"Ticket validation failed: {str(e)}")
+            self._log_audit("", "unknown", client_addr, "TGS_ERROR", f"解密或校验失败：{e}")
+            return TGSResponse(success=False, error=f"票据校验失败：{e}")
     
     def sign_response(self, response_body: dict[str, Any]) -> tuple[str, str]:
         """

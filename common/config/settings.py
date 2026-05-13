@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 def load_settings(path: Path | None = None) -> dict[str, Any]:
     """加载 settings.json，未配置时使用本地开发默认值。"""
     settings = deepcopy(DEFAULT_SETTINGS)
-    config_path = path or SETTINGS_PATH
+    if path is not None:
+        config_path = path
+    elif os.environ.get("SAFECHAT_SETTINGS_PATH"):
+        config_path = Path(os.environ["SAFECHAT_SETTINGS_PATH"])
+    else:
+        config_path = SETTINGS_PATH
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as file:
             _deep_update(settings, json.load(file))

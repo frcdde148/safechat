@@ -1,4 +1,4 @@
-"""SHA-256 digest helpers - 纯 Python 实现 (本科生水平)
+"""SHA-256 digest helpers - 纯 Python 实现
 
 参考 FIPS 180-4 标准实现：
 - 消息填充规则

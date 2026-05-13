@@ -37,13 +37,68 @@ from common.protocol.socket_io import request
 AUTH_FLOW = ("C_AS_REQ", "AS_C_REP", "C_TGS_REQ", "TGS_C_REP", "C_V_REQ", "V_C_REP")
 
 
+CONSOLE_STYLE = """
+QMainWindow, QWidget {
+    font-size: 28px;
+}
+QGroupBox {
+    font-size: 30px;
+    font-weight: 600;
+    margin-top: 24px;
+    padding: 18px 12px 12px 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 16px;
+    padding: 0 8px;
+}
+QLabel {
+    font-size: 28px;
+}
+QLineEdit, QSpinBox, QComboBox {
+    min-height: 54px;
+    padding: 8px 12px;
+    font-size: 28px;
+}
+QPushButton {
+    min-height: 58px;
+    padding: 8px 18px;
+    font-size: 28px;
+    font-weight: 600;
+}
+QTabWidget::pane {
+    border: 1px solid #d1d5db;
+}
+QTabBar::tab {
+    min-height: 54px;
+    padding: 12px 22px;
+    font-size: 28px;
+}
+QHeaderView::section {
+    min-height: 56px;
+    padding: 10px;
+    font-size: 26px;
+    font-weight: 600;
+}
+QTableWidget {
+    font-size: 26px;
+    gridline-color: #d1d5db;
+}
+QTextEdit {
+    font-size: 26px;
+}
+"""
+
+
 class AdminConsole(QMainWindow):
     """用于用户、会话、审计和聊天治理的独立管理控制台。"""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("SafeChat 管理端")
-        self.resize(1500, 930)
+        self.setWindowTitle("SafeChat 控制台")
+        self.resize(1900, 1100)
+        self.setMinimumSize(1500, 900)
+        self.setStyleSheet(CONSOLE_STYLE)
         self._settings = load_settings()
         self._auth_client: AuthClient | None = None
         self._admin_token = ""
@@ -68,7 +123,7 @@ class AdminConsole(QMainWindow):
         self.refresh_status()
 
     def _build_login_panel(self) -> QGroupBox:
-        group = QGroupBox("管理员 Kerberos 认证")
+        group = QGroupBox("控制台 Kerberos 认证")
         layout = QGridLayout(group)
         as_host, as_port = service_address("as_server")
         self.username_input = QLineEdit()
@@ -768,6 +823,8 @@ class AdminConsole(QMainWindow):
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.horizontalHeader().setMinimumHeight(64)
+        table.verticalHeader().setDefaultSectionSize(58)
         table.verticalHeader().setVisible(False)
 
     @staticmethod

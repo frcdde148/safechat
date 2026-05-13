@@ -1,11 +1,9 @@
 """AS认证服务器入口文件"""
 
-from __future__ import annotations
-
-import uuid
 import json
-import time
 import re
+import time
+import uuid
 
 from common.config.settings import server_bind_address, service_address
 from common.protocol.admin_token import issue_admin_token, verify_admin_token
@@ -33,14 +31,13 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         return {
             "type": "ERROR",
             "seq": message["seq"],
-            "body": {"error": "AS only accepts C_AS_REQ messages"},
+            "body": {"error": "AS 仅接受 C_AS_REQ 消息"},
             "sid": message.get("sid", ""),
             "v": 1,
             "ts": message.get("ts", 0),
             "nonce": message.get("nonce", ""),
             "hmac": "",
             "sig": "",
-            "pubkey": "",
         }
     
     # 从请求中提取凭证
@@ -66,7 +63,6 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
             "nonce": message.get("nonce", ""),
             "hmac": "",
             "sig": "",
-            "pubkey": "",
         }
     
     # 构建包含所有必需字段的响应体
@@ -88,7 +84,6 @@ def _envelope(message: dict, response_type: str, body: dict) -> dict:
         "nonce": message.get("nonce", ""),
         "hmac": "",
         "sig": "",
-        "pubkey": "",
     }
 
 
@@ -113,7 +108,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
     ok, admin_user = _require_admin(message)
     if not ok:
         as_server.dao.add_audit_log("", admin_user or "unknown", address[0], "AS_ADMIN_DENIED")
-        return _admin_error(message, "admin permission required")
+        return _admin_error(message, "需要管理员权限")
     body = message.get("body", {})
     action = message["type"]
     dao = as_server.dao
@@ -201,7 +196,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
             reason = body.get("reason", "")
             ban_seconds = int(body.get("ban_seconds", 1800))
             if ban_seconds <= 0:
-                return _admin_error(message, "ban_seconds must be positive")
+                return _admin_error(message, "封禁时长必须大于 0")
             with dao._connect() as conn:
                 conn.execute(
                     """
@@ -220,7 +215,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
         if action == "AS_ADMIN_UNBAN_IP":
             ip = dao._normalize_ip(body.get("ip_address", ""))
             if not ip:
-                return _admin_error(message, "ip_address is required")
+                return _admin_error(message, "IP 地址不能为空")
             with dao._connect() as conn:
                 rows = conn.execute("SELECT id, ip_address FROM ip_bans").fetchall()
                 ids = [int(row["id"]) for row in rows if dao._normalize_ip(row["ip_address"]) == ip]
@@ -264,7 +259,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
                 return _envelope(message, "AS_ADMIN_ACK", {"audit_logs": [dict(row) for row in rows]})
     except Exception as exc:
         return _admin_error(message, str(exc))
-    return _admin_error(message, f"unknown AS admin action: {action}")
+    return _admin_error(message, f"未知 AS 管理操作：{action}")
 
 
 def _handle_session_heartbeat(message: dict, address: tuple[str, int]) -> dict:
@@ -274,12 +269,12 @@ def _handle_session_heartbeat(message: dict, address: tuple[str, int]) -> dict:
     extensions = body.get("extensions", {}) if isinstance(body.get("extensions", {}), dict) else {}
     session_id = str(extensions.get("session_id", body.get("session_id", "")))
     if not username or not session_id:
-        return _admin_error(message, "username and session_id are required")
+        return _admin_error(message, "用户名和会话 ID 不能为空")
     session = as_server.dao.get_active_session(username, "client")
     if not session or session.get("session_id") != session_id:
-        return _admin_error(message, "session is not active")
+        return _admin_error(message, "会话未激活")
     if as_server.dao._normalize_ip(session.get("client_ip", "")) != as_server.dao._normalize_ip(address[0]):
-        return _admin_error(message, "session address mismatch")
+        return _admin_error(message, "会话地址不匹配")
     as_server.dao.update_session_last_seen(session_id)
     return _envelope(message, "AS_SESSION_HEARTBEAT_ACK", {"ok": True})
 
@@ -301,20 +296,20 @@ def _handle_admin_token_req(message: dict, address: tuple[str, int]) -> dict:
     try:
         tgs_service = dao.get_service(as_server.TGS_SERVICE)
         if not tgs_service:
-            return _admin_error(message, "TGS service is not configured")
+            return _admin_error(message, "TGS 服务未配置")
         body = message.get("body", {})
         tgt = decrypt_ticket(body.get("ticket_tgs", body.get("ticket_tgt", {})), tgs_service["service_key"])
         if not tgt.is_valid():
-            return _admin_error(message, f"TGT is expired: {tgt.validity_debug()}")
+            return _admin_error(message, f"TGT 已过期：{tgt.validity_debug()}")
         authenticator = decrypt_authenticator(body.get("authenticator_c", body.get("authenticator", {})), tgt.session_key)
         if authenticator.client_id != tgt.client_id:
-            return _admin_error(message, "authenticator client does not match TGT")
+            return _admin_error(message, "认证器用户与 TGT 不匹配")
         if authenticator.client_addr and authenticator.client_addr != tgt.client_addr:
-            return _admin_error(message, "authenticator does not match TGT client address")
+            return _admin_error(message, "认证器地址与 TGT 客户端地址不匹配")
         user = dao.get_user(tgt.client_id)
         if not user or user.get("role") != "admin":
             dao.add_audit_log("", tgt.client_id, address[0], "AS_ADMIN_TOKEN_DENIED")
-            return _admin_error(message, "admin permission required")
+            return _admin_error(message, "需要管理员权限")
         token = issue_admin_token(tgt.client_id)
         dao.add_audit_log("", tgt.client_id, address[0], "AS_ADMIN_TOKEN_OK")
         return _envelope(message, "AS_ADMIN_ACK", {"admin_token": token, "expires_in": 3600})

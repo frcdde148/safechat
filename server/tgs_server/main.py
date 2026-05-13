@@ -25,14 +25,13 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
         return {
             "type": "ERROR",
             "seq": message["seq"],
-            "body": {"error": "TGS only accepts C_TGS_REQ messages"},
+            "body": {"error": "TGS 仅接受 C_TGS_REQ 消息"},
             "sid": message.get("sid", ""),
             "v": 1,
             "ts": message.get("ts", 0),
             "nonce": message.get("nonce", ""),
             "hmac": "",
             "sig": "",
-            "pubkey": "",
         }
     
     # 提取请求参数
@@ -44,11 +43,10 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
     message_body = message.get("body", {})
     message_hmac = message.get("hmac", "")
     message_sig = message.get("sig", "")
-    message_pubkey = message.get("pubkey", "")
     
     # 请求服务票据
     response = tgs_server.request_service_ticket(ticket_tgt, authenticator, client_addr, 
-                                                 message_body, message_hmac, message_sig, message_pubkey)
+                                                 message_body, message_hmac, message_sig)
     
     if not response.success:
         return {
@@ -61,7 +59,6 @@ def handle_message(message: dict, address: tuple[str, int]) -> dict:
             "nonce": message.get("nonce", ""),
             "hmac": "",
             "sig": "",
-            "pubkey": "",
         }
     
     # 构建包含所有必需字段的响应体
@@ -83,7 +80,6 @@ def _envelope(message: dict, response_type: str, body: dict) -> dict:
         "nonce": message.get("nonce", ""),
         "hmac": "",
         "sig": "",
-        "pubkey": "",
     }
 
 
@@ -104,7 +100,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
     ok, admin_user = _require_admin(message)
     if not ok:
         tgs_server.dao.add_audit_log("", admin_user or "unknown", address[0], "TGS_ADMIN_DENIED")
-        return _admin_error(message, "admin permission required")
+        return _admin_error(message, "需要管理员权限")
     body = message.get("body", {})
     try:
         if message["type"] == "TGS_ADMIN_AUDIT_QUERY":
@@ -121,7 +117,7 @@ def _handle_admin_message(message: dict, address: tuple[str, int]) -> dict:
                 return _envelope(message, "TGS_ADMIN_ACK", {"audit_logs": [dict(row) for row in rows]})
     except Exception as exc:
         return _admin_error(message, str(exc))
-    return _admin_error(message, f"unknown TGS admin action: {message['type']}")
+    return _admin_error(message, f"未知 TGS 管理操作：{message['type']}")
 
 
 def main() -> None:

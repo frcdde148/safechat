@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from common.crypto.rsa_sign import sign_text, verify_text
-from common.crypto.sha256 import sha256_hex
+from common.crypto.sha256 import hmac_sha256, sha256_hex
 
 
 def canonical_body(body: dict[str, Any]) -> str:
@@ -19,14 +19,22 @@ def body_digest(body: dict[str, Any]) -> str:
     return sha256_hex(canonical_body(body).encode("utf-8"))
 
 
-def sign_body(body: dict[str, Any], private_key_pem: str) -> tuple[str, str]:
-    """返回消息体摘要及对该摘要的 RSA 签名。"""
-    digest = body_digest(body)
+def body_hmac(body: dict[str, Any], secret: str) -> str:
+    """返回消息体的 HMAC-SHA256。"""
+    return hmac_sha256(
+        secret.encode("utf-8"),
+        canonical_body(body).encode("utf-8"),
+    ).hex()
+
+
+def sign_body(body: dict[str, Any], private_key_pem: str, hmac_key: str) -> tuple[str, str]:
+    """返回消息体 HMAC 及对该 HMAC 的 RSA 签名。"""
+    digest = body_hmac(body, hmac_key)
     return digest, sign_text(digest, private_key_pem)
 
 
-def verify_body_signature(body: dict[str, Any], digest: str, signature: str, public_key_pem: str) -> bool:
-    """同时验证消息体摘要和 RSA 签名。"""
-    if body_digest(body) != digest:
+def verify_body_signature(body: dict[str, Any], digest: str, signature: str, public_key_pem: str, hmac_key: str) -> bool:
+    """同时验证消息体 HMAC 和 RSA 签名。"""
+    if body_hmac(body, hmac_key) != digest:
         return False
     return verify_text(digest, signature, public_key_pem)
