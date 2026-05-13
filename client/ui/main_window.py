@@ -403,49 +403,51 @@ class MainWindow(QMainWindow):
         from datetime import datetime
         
         self.chat_view.begin_message_batch()
-        for message in messages:
-            message_id = int(message.get("id", 0) or 0)
-            session_key = self._view_session_key(
-                message.get("chat_type", "group"),
-                message.get("recipient", ""),
-            )
-            visible_key = (session_key, message_id)
-            
-            # 跳过已显示的消息
-            if message_id and visible_key in self._visible_message_ids:
-                continue
-            
-            # 判断是否是自己发送的消息
-            is_self = message["sender"] == self._auth_client.username
-            if is_self and not include_self:
-                continue
-            
-            # 记录已显示的消息ID
-            if message_id:
-                self._visible_message_ids.add(visible_key)
-            
-            # 准备消息参数
-            kind = "self" if is_self else "peer"
-            ciphertext = message.get("ciphertext", "")
-            image_data = message.get("image_data", "")
-            file_name = message.get("file_name", "")
-            username = message.get("sender") or self._auth_client.username
-            
-            # 时间戳转换（毫秒转可读格式）
-            timestamp = message.get("timestamp", "")
-            if timestamp:
-                try:
-                    ts = int(timestamp) / 1000  # 毫秒转秒
-                    timestamp = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-                except:
-                    timestamp = ""
-                    
-            # 添加消息到聊天视图，包含可选的 hmac/sig
-            hmac_val = message.get("hmac", "")
-            sig_val = message.get("sig", "")
-            pubkey_val = message.get("pubkey", "")
-            self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
-        self.chat_view.end_message_batch()
+        try:
+            for message in messages:
+                message_id = int(message.get("id", 0) or 0)
+                session_key = self._view_session_key(
+                    message.get("chat_type", "group"),
+                    message.get("recipient", ""),
+                )
+                visible_key = (session_key, message_id)
+                
+                # 跳过已显示的消息
+                if message_id and visible_key in self._visible_message_ids:
+                    continue
+                
+                # 判断是否是自己发送的消息
+                is_self = message["sender"] == self._auth_client.username
+                if is_self and not include_self:
+                    continue
+                
+                # 记录已显示的消息ID
+                if message_id:
+                    self._visible_message_ids.add(visible_key)
+                
+                # 准备消息参数
+                kind = "self" if is_self else "peer"
+                ciphertext = message.get("ciphertext", "")
+                image_data = message.get("image_data", "")
+                file_name = message.get("file_name", "")
+                username = message.get("sender") or self._auth_client.username
+                
+                # 时间戳转换（毫秒转可读格式）
+                timestamp = message.get("timestamp", "")
+                if timestamp:
+                    try:
+                        ts = int(timestamp) / 1000  # 毫秒转秒
+                        timestamp = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+                    except:
+                        timestamp = ""
+                        
+                # 添加消息到聊天视图，包含可选的 hmac/sig
+                hmac_val = message.get("hmac", "")
+                sig_val = message.get("sig", "")
+                pubkey_val = message.get("pubkey", "")
+                self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
+        finally:
+            self.chat_view.end_message_batch()
 
     def _view_session_key(self, chat_type: str = "group", recipient: str = "") -> str:
         """生成视图会话唯一标识"""
