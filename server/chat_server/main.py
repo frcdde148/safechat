@@ -272,11 +272,11 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
             recipient=recipient,
             chat_type=chat_type,
             session_key=_session_key(ticket.client_id, chat_type, recipient),
-            message_text=plaintext,
+            message_text=f"[图片] {file_name}",
             message_hmac=message.get("hmac", ""),
             message_sig=message.get("sig", ""),
             message_pubkey=_session_pubkey(ticket.client_id, ticket.session_key),
-            image_data=file_name,
+            image_data=plaintext,
             file_name=file_name,
         )
         

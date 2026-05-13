@@ -73,18 +73,25 @@ class MessageBubble(QFrame):
         # 消息内容（图片或文本）
         if image_data:
             # 显示图片（可点击查看大图）
-            self.full_image_data = image_data
             self.message_label = QLabel()
-            pixmap = QPixmap()
-            pixmap.loadFromData(base64.b64decode(image_data))
-            if pixmap.width() > 300:
-                scaled_pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+            self.full_image_data = ""
+            try:
+                image_bytes = base64.b64decode(image_data, validate=True)
+                pixmap = QPixmap()
+                if not pixmap.loadFromData(image_bytes):
+                    raise ValueError("invalid image payload")
+            except Exception:
+                self.message_label.setText(f"[图片] {file_name}" if file_name else text)
             else:
-                scaled_pixmap = pixmap
-            self.message_label.setPixmap(scaled_pixmap)
-            self.message_label.setAlignment(Qt.AlignCenter)
-            self.message_label.setCursor(Qt.PointingHandCursor)
-            self.message_label.mousePressEvent = lambda e: self._show_full_image()
+                self.full_image_data = image_data
+                if pixmap.width() > 300:
+                    scaled_pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+                else:
+                    scaled_pixmap = pixmap
+                self.message_label.setPixmap(scaled_pixmap)
+                self.message_label.setAlignment(Qt.AlignCenter)
+                self.message_label.setCursor(Qt.PointingHandCursor)
+                self.message_label.mousePressEvent = lambda e: self._show_full_image()
         else:
             # 显示文本消息
             self.message_label = QLabel(text)
