@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import queue
 
 from PyQt5.QtCore import QThread, Qt, pyqtSignal
@@ -52,7 +53,7 @@ class ThumbnailWorker(QThread):
                 image_bytes = base64.b64decode(image_data, validate=True)
                 image = QImage.fromData(image_bytes)
                 if image.isNull():
-                    raise ValueError("invalid image data")
+                    raise ValueError("图片数据无效")
                 if image.width() > 300:
                     image = image.scaledToWidth(300, Qt.SmoothTransformation)
                 self.thumbnail_ready.emit(key, image)
@@ -108,8 +109,8 @@ class MessageBubble(QFrame):
         self.timestamp_label.setStyleSheet("font-size: 14px; color: #9ca3af;")
         
         # 消息内容（图片或文本）
-        if image_data:
-            # 图片数据可能很大，列表中只显示轻量占位，点击时再解码显示大图。
+        if image_data or file_name:
+            # 图片数据可能很大，先显示占位，缩略图由后台线程生成。
             self.message_label = QLabel()
             self.full_image_data = image_data
             display_name = file_name or text.replace("[图片]", "").strip()
@@ -131,7 +132,7 @@ class MessageBubble(QFrame):
             self.message_label.setStyleSheet(self._bubble_style("#dbeafe", "#1e3a8a", is_self=True))
             self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             
-            # Create message widget with timestamp
+            # 带时间戳的消息区域
             message_widget = QWidget()
             message_layout = QHBoxLayout(message_widget)
             message_layout.setContentsMargins(0, 0, 0, 0)
@@ -168,7 +169,7 @@ class MessageBubble(QFrame):
             self.message_label.setStyleSheet(self._bubble_style("#ffffff", "#1f2937", is_self=False))
             self.message_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
             
-            # Create message widget with timestamp
+            # 带时间戳的消息区域
             message_widget = QWidget()
             message_layout = QHBoxLayout(message_widget)
             message_layout.setContentsMargins(0, 0, 0, 0)
@@ -199,6 +200,13 @@ class MessageBubble(QFrame):
         self.message_label.setCursor(Qt.PointingHandCursor)
         self.message_label.mousePressEvent = lambda e: self._show_full_image()
         self.message_label.updateGeometry()
+
+    def set_image_data(self, image_data: str, file_name: str = "") -> None:
+        """设置图片正文数据，供缩略图和原图预览使用。"""
+        self.image_data = image_data
+        self.full_image_data = image_data
+        if file_name:
+            self.file_name = file_name
 
     def set_display_mode(self, show_ciphertext: bool) -> None:
         self.show_cipher = show_ciphertext
@@ -652,7 +660,7 @@ class ChatView(QWidget):
         layout.addStretch(1)
         return panel
 
-    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", hmac: str = "", sig: str = "", pubkey: str = "") -> None:
+    def add_message(self, text: str, kind: str = "peer", ciphertext: str = "", image_data: str = "", file_name: str = "", username: str = "", timestamp: str = "", hmac: str = "", sig: str = "", pubkey: str = "") -> MessageBubble:
         bubble = MessageBubble(text, kind, ciphertext, image_data, file_name, username, timestamp, hmac, sig, pubkey)
         self.message_area.insertWidget(self.message_area.count() - 1, bubble)
         if kind not in ("system", "security"):
@@ -666,6 +674,14 @@ class ChatView(QWidget):
             self._pending_cipher_refresh = True
         else:
             self._refresh_cipher_toggle_ui()
+        return bubble
+
+    def set_message_image(self, bubble: MessageBubble, image_data: str, file_name: str = "") -> None:
+        """给已有图片消息气泡填充图片正文并生成缩略图。"""
+        if bubble not in self.message_bubbles:
+            return
+        bubble.set_image_data(image_data, file_name)
+        self._request_thumbnail(bubble, image_data, file_name or bubble.file_name)
 
     def _request_thumbnail(self, bubble: MessageBubble, image_data: str, file_name: str) -> None:
         key = self._thumbnail_key(image_data, file_name)
@@ -680,7 +696,8 @@ class ChatView(QWidget):
 
     @staticmethod
     def _thumbnail_key(image_data: str, file_name: str) -> str:
-        return f"{file_name}:{len(image_data)}:{image_data[:96]}"
+        digest = hashlib.sha256(image_data.encode("utf-8", errors="ignore")).hexdigest()
+        return f"{file_name}:{len(image_data)}:{digest}"
 
     def _on_thumbnail_ready(self, key: str, image: QImage) -> None:
         self._remember_thumbnail(key, image)

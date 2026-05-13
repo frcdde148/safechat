@@ -49,6 +49,7 @@ class Authenticator:
     client_id: str
     client_addr: str
     timestamp: int
+    public_key_fingerprint: str = ""
 
 
 def ticket_plaintext(ticket: Ticket) -> dict[str, Any]:
@@ -89,11 +90,14 @@ def ticket_plaintext(ticket: Ticket) -> dict[str, Any]:
 
 def authenticator_plaintext(authenticator: Authenticator, timestamp_field: str = "ts_3") -> dict[str, Any]:
     """将认证子转换为标准 Kerberos plaintext 结构。"""
-    return {
+    payload = {
         "id_c": authenticator.client_id,
         "ad_c": authenticator.client_addr,
         timestamp_field: authenticator.timestamp,
     }
+    if authenticator.public_key_fingerprint:
+        payload["public_key_fingerprint"] = authenticator.public_key_fingerprint
+    return payload
 
 
 def issue_ticket(
@@ -116,9 +120,14 @@ def issue_ticket(
     )
 
 
-def issue_authenticator(client_id: str, client_addr: str) -> Authenticator:
+def issue_authenticator(client_id: str, client_addr: str, public_key_fingerprint: str = "") -> Authenticator:
     """创建带当前时间戳的认证子。"""
-    return Authenticator(client_id=client_id, client_addr=client_addr, timestamp=int(time.time() * 1000))
+    return Authenticator(
+        client_id=client_id,
+        client_addr=client_addr,
+        timestamp=int(time.time() * 1000),
+        public_key_fingerprint=public_key_fingerprint,
+    )
 
 
 def encrypt_model(model: Ticket | Authenticator | dict[str, Any], secret: str) -> dict[str, str]:
@@ -173,6 +182,7 @@ def decrypt_authenticator(encrypted: dict[str, str], secret: str) -> Authenticat
                 payload.get("ts_3", payload.get("ts_1", payload.get("timestamp", 0))),
             )
         ),
+        public_key_fingerprint=str(payload.get("public_key_fingerprint", "")),
     )
 
 

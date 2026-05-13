@@ -20,7 +20,7 @@ from typing import Any
 # 导入加密模块
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.rsa_sign import generate_key_pair
-from common.crypto.sha256 import salted_password_hash
+from common.crypto.sha256 import salted_password_hash, sha256_hex
 from common.models.tickets import encrypt_authenticator, encrypt_model, issue_authenticator
 from common.protocol.message import Message
 from common.protocol.security import sign_body
@@ -76,6 +76,7 @@ class AuthClient:
         
         # RSA密钥对
         self.private_key_pem, self.public_key_pem = generate_key_pair()
+        self.public_key_fingerprint = sha256_hex(self.public_key_pem.encode("utf-8"))
 
         # 在构造完成后，如果仍未设置 client_addr，尝试通过临时 UDP socket 推断本地出站 IP
         if not self.client_addr:
@@ -369,13 +370,18 @@ class AuthClient:
         
         # 构造authenticator并用Kc,v加密
         # 使用服务票据中保存的客户端地址，而非重新推断的地址，确保与 ChatServer 验证一致
-        auth = issue_authenticator(self.username, self.service_ticket_client_addr or self.client_addr)
+        auth = issue_authenticator(
+            self.username,
+            self.service_ticket_client_addr or self.client_addr,
+            self.public_key_fingerprint,
+        )
         self.last_authenticator_ts = int(auth.timestamp)
         authenticator = encrypt_authenticator(auth, self.session_key_c_v, timestamp_field="ts_5")
         self.authenticator_v_plaintext = {
             "id_c": self.username,
             "ad_c": self.service_ticket_client_addr or self.client_addr,
             "ts_5": self.last_authenticator_ts,
+            "public_key_fingerprint": self.public_key_fingerprint,
         }
         
         body = {
@@ -481,7 +487,7 @@ class AuthClient:
         }
         
         # 3. 生成HMAC摘要和RSA签名（登录后必须签名）
-        digest, signature = sign_body(body, self.private_key_pem)
+        digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
         
         # 4. 封装消息
         message = Message(
@@ -490,7 +496,6 @@ class AuthClient:
             body=body,
             hmac=digest,            # HMAC摘要
             sig=signature,          # RSA签名
-            pubkey="",
         )
         
         # 5. 发送请求
@@ -590,7 +595,7 @@ class AuthClient:
         }
         
         # 步骤5: HMAC和RSA签名
-        digest, signature = sign_body(body, self.private_key_pem)
+        digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
         
         # 步骤6: 封装消息
         message = Message(
@@ -599,7 +604,6 @@ class AuthClient:
             body=body,
             hmac=digest,
             sig=signature,
-            pubkey="",
         )
         
         # 步骤7: 发送（超时60秒）
@@ -721,15 +725,19 @@ class AuthClient:
         session_key = self._session_key(chat_type, recipient)
         
         # 构造请求（只拉取last_seen_id之后的消息）
+        body = {
+            "ticket_v": self.service_ticket,
+            "last_seen_id": self.last_message_ids.get(session_key, 0),  # 增量拉取
+            "chat_type": chat_type,
+            "recipient": recipient,
+        }
+        digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
         message = Message(
             type="CHAT_POLL",
             seq=self._next_seq(),
-            body={
-                "ticket_v": self.service_ticket,
-                "last_seen_id": self.last_message_ids.get(session_key, 0),  # 增量拉取
-                "chat_type": chat_type,
-                "recipient": recipient,
-            },
+            body=body,
+            hmac=digest,
+            sig=signature,
         )
         
         response = request(self.chat_host, self.chat_port, message, timeout=30.0)
@@ -757,14 +765,42 @@ class AuthClient:
                 "sig": item.get("sig", ""),
             }
             
-            # 如果是图片消息，包含图片数据
-            if item.get("image_data"):
+            if item.get("has_image"):
+                msg_data["has_image"] = True
+                msg_data["file_name"] = item.get("file_name", "")
+            elif item.get("image_data"):
                 msg_data["image_data"] = item["image_data"]
                 msg_data["file_name"] = item.get("file_name", "")
             
             decrypted.append(msg_data)
         
         return decrypted
+
+    def fetch_message_image(self, message_id: int) -> dict[str, Any]:
+        """按消息 ID 拉取并解密图片 Base64 数据。"""
+        if not self.service_ticket or not self.session_key_c_v:
+            raise ValueError("聊天会话未认证")
+
+        body = {
+            "ticket_v": self.service_ticket,
+            "message_id": int(message_id),
+        }
+        digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
+        message = Message(
+            type="IMAGE_FETCH",
+            seq=self._next_seq(),
+            body=body,
+            hmac=digest,
+            sig=signature,
+        )
+        response = request(self.chat_host, self.chat_port, message, timeout=60.0)
+        self._raise_on_error(response)
+        image_cipher = response["body"]["image_cipher"]
+        return {
+            "message_id": int(response["body"].get("message_id", message_id)),
+            "image_data": decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], self.session_key_c_v),
+            "file_name": response["body"].get("file_name", ""),
+        }
 
     def reset_session_cursor(self, chat_type: str = "group", recipient: str = "") -> None:
         """重置会话游标（用于切换视图时重新加载消息）"""
@@ -811,12 +847,16 @@ class AuthClient:
         if not self.service_ticket or not self.session_key_c_v:
             raise ValueError("聊天会话未认证")
         
+        body = {
+            "ticket_v": self.service_ticket,
+        }
+        digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
         message = Message(
             type="USER_LIST",
             seq=self._next_seq(),
-            body={
-                "ticket_v": self.service_ticket,
-            },
+            body=body,
+            hmac=digest,
+            sig=signature,
         )
         response = request(self.chat_host, self.chat_port, message)
         self._raise_on_error(response)
@@ -897,7 +937,10 @@ class AuthClient:
         if not self.tgt or not self.session_key_c_tgs:
             raise ValueError("缺少TGT，请先完成Kerberos认证")
         
-        authenticator = encrypt_model(issue_authenticator(self.username, self.client_addr), self.session_key_c_tgs)
+        authenticator = encrypt_model(
+            issue_authenticator(self.username, self.tgt_client_addr or self.client_addr),
+            self.session_key_c_tgs,
+        )
         
         message = Message(
             type="AS_ADMIN_TOKEN_REQ",
@@ -994,7 +1037,7 @@ class AuthClient:
         }
         
         # 生成签名
-        digest, signature = sign_body(body, self.private_key_pem)
+        digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
         
         message = Message(
             type=action_type,
@@ -1002,7 +1045,6 @@ class AuthClient:
             body=body,
             hmac=digest,
             sig=signature,
-            pubkey="",
         )
         
         response = request(self.chat_host, self.chat_port, message)
@@ -1051,7 +1093,7 @@ class AuthClient:
             out: dict[str, Any] = {}
             for key, item in value.items():
                 disp = AuthClient._display_protocol(item)
-                # 移除空字符串或空容器的字段（如 sid, hmac, pubkey）以便展示更清晰
+                # 移除空字符串或空容器字段，便于界面展示。
                 if disp == "" or disp is None:
                     continue
                 if isinstance(disp, dict) and not disp:

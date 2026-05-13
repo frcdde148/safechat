@@ -38,6 +38,10 @@ class MainWindow(QMainWindow):
         self._auth_payload: dict = {}             # 认证参数（用户名、密码、服务器地址）
         self._auth_client: AuthClient | None = None  # 认证客户端实例
         self._image_send_threads: list[QThread] = []  # 图片发送线程列表
+        self._image_fetch_threads: list[QThread] = []  # 图片历史加载线程列表
+        self._session_load_threads: list[QThread] = []  # 会话切换加载线程列表
+        self._session_load_generation = 0             # 会话加载版本号（忽略过期结果）
+        self._image_data_cache: dict[int, tuple[str, str]] = {}  # 已解密图片缓存
         self._visible_message_ids: set[tuple[str, int]] = set()  # 已显示的消息ID
         self._is_relogin = False                  # 是否正在重新认证
 
@@ -228,7 +232,7 @@ class MainWindow(QMainWindow):
             ciphertext = str(sent_msg.get("body", {}).get("message_cipher", ""))
             hmac_digest = str(sent_msg.get("hmac", ""))
             signature = str(sent_msg.get("sig", ""))
-            pubkey = str(sent_msg.get("pubkey", ""))
+            pubkey = self._auth_client.public_key_pem
             message_id = int(result.get("message_id", 0))
             
             # 记录已发送的消息ID（避免重复显示）
@@ -276,6 +280,8 @@ class MainWindow(QMainWindow):
                 return
         
         # 避免重复轮询
+        if any(thread.isRunning() for thread in self._session_load_threads):
+            return
         if getattr(self, '_poll_thread', None) and self._poll_thread.isRunning():
             return
         
@@ -316,11 +322,14 @@ class MainWindow(QMainWindow):
     def _is_ticket_expired_error(exc: Exception) -> bool:
         """判断是否为票据过期错误"""
         message = str(exc).lower()
+        raw_message = str(exc)
         return (
             ("expired" in message and ("ticket" in message or "tgt" in message))
+            or ("过期" in raw_message and ("票据" in raw_message or "TGT" in raw_message))
             or "session revoked" in message
             or "session_revoked" in message
             or "re-login" in message
+            or "会话已被撤销" in raw_message
         )
 
     def _mark_reauth_required(self, reason: str) -> None:
@@ -378,17 +387,63 @@ class MainWindow(QMainWindow):
         
         # 重置会话游标并拉取消息
         self._auth_client.reset_session_cursor(session["chat_type"], session["recipient"])
-        try:
-            messages = self._auth_client.poll_chat_messages(session["chat_type"], session["recipient"])
-        except Exception as exc:
+        self._load_session_messages_async(session["chat_type"], session["recipient"], "会话")
+
+    def _load_session_messages_async(self, chat_type: str, recipient: str, label: str) -> None:
+        """后台加载当前会话消息，避免图片解密阻塞 UI。"""
+        if not self._auth_client:
+            return
+
+        class SessionLoadThread(QThread):
+            finished = pyqtSignal(str, str, list)
+            error = pyqtSignal(str, str, Exception)
+
+            def __init__(self, auth_client: AuthClient, chat_type: str, recipient: str) -> None:
+                super().__init__()
+                self.auth_client = auth_client
+                self.chat_type = chat_type
+                self.recipient = recipient
+
+            def run(self) -> None:
+                try:
+                    messages = self.auth_client.poll_chat_messages(self.chat_type, self.recipient)
+                    self.finished.emit(self.chat_type, self.recipient, messages)
+                except Exception as exc:
+                    self.error.emit(self.chat_type, self.recipient, exc)
+
+        self._session_load_generation += 1
+        generation = self._session_load_generation
+        thread = SessionLoadThread(self._auth_client, chat_type, recipient)
+
+        def on_finished(done_type: str, done_recipient: str, messages: list) -> None:
+            if thread in self._session_load_threads:
+                self._session_load_threads.remove(thread)
+            if generation != self._session_load_generation:
+                return
+            current = self.chat_view.current_session()
+            if current["chat_type"] != done_type or current["recipient"] != done_recipient:
+                return
+            self._display_chat_messages(messages, include_self=True)
+
+        def on_error(done_type: str, done_recipient: str, exc: Exception) -> None:
+            if thread in self._session_load_threads:
+                self._session_load_threads.remove(thread)
+            if generation != self._session_load_generation:
+                return
+            current = self.chat_view.current_session()
+            if current["chat_type"] != done_type or current["recipient"] != done_recipient:
+                return
             if self._is_ticket_expired_error(exc):
                 self._mark_reauth_required(str(exc))
                 self._poll_timer.stop()
                 return
             self.chat_view.security_status.set_value("轮询失败", "errorBadge")
-            self.chat_view.add_message(f"安全提示：拉取会话消息失败，{exc}", "security")
-            return
-        self._display_chat_messages(messages, include_self=True)
+            self.chat_view.add_message(f"安全提示：拉取{label}消息失败，{exc}", "security")
+
+        thread.finished.connect(on_finished)
+        thread.error.connect(on_error)
+        self._session_load_threads.append(thread)
+        thread.start()
 
     def _display_chat_messages(self, messages: list[dict], include_self: bool = False) -> None:
         """显示聊天消息
@@ -430,6 +485,10 @@ class MainWindow(QMainWindow):
                 ciphertext = message.get("ciphertext", "")
                 image_data = message.get("image_data", "")
                 file_name = message.get("file_name", "")
+                if not image_data and message_id in self._image_data_cache:
+                    image_data, cached_name = self._image_data_cache[message_id]
+                    file_name = file_name or cached_name
+                has_image = bool(message.get("has_image") or image_data or file_name)
                 username = message.get("sender") or self._auth_client.username
                 
                 # 时间戳转换（毫秒转可读格式）
@@ -445,9 +504,49 @@ class MainWindow(QMainWindow):
                 hmac_val = message.get("hmac", "")
                 sig_val = message.get("sig", "")
                 pubkey_val = message.get("pubkey", "")
-                self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
+                bubble = self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
+                if has_image and not image_data and message_id:
+                    self._fetch_message_image_async(message_id, bubble, file_name)
         finally:
             self.chat_view.end_message_batch()
+
+    def _fetch_message_image_async(self, message_id: int, bubble, file_name: str) -> None:
+        """后台拉取单条图片正文，避免阻塞会话消息列表。"""
+        if not self._auth_client:
+            return
+
+        class ImageFetchThread(QThread):
+            finished = pyqtSignal(int, str, str)
+            error = pyqtSignal(int, Exception)
+
+            def __init__(self, auth_client: AuthClient, message_id: int) -> None:
+                super().__init__()
+                self.auth_client = auth_client
+                self.message_id = message_id
+
+            def run(self) -> None:
+                try:
+                    result = self.auth_client.fetch_message_image(self.message_id)
+                    self.finished.emit(self.message_id, result["image_data"], result.get("file_name", ""))
+                except Exception as exc:
+                    self.error.emit(self.message_id, exc)
+
+        thread = ImageFetchThread(self._auth_client, message_id)
+
+        def on_finished(done_id: int, image_data: str, done_file_name: str) -> None:
+            if thread in self._image_fetch_threads:
+                self._image_fetch_threads.remove(thread)
+            self._image_data_cache[done_id] = (image_data, done_file_name or file_name)
+            self.chat_view.set_message_image(bubble, image_data, done_file_name or file_name)
+
+        def on_error(done_id: int, exc: Exception) -> None:
+            if thread in self._image_fetch_threads:
+                self._image_fetch_threads.remove(thread)
+
+        thread.finished.connect(on_finished)
+        thread.error.connect(on_error)
+        self._image_fetch_threads.append(thread)
+        thread.start()
 
     def _view_session_key(self, chat_type: str = "group", recipient: str = "") -> str:
         """生成视图会话唯一标识"""
@@ -486,17 +585,7 @@ class MainWindow(QMainWindow):
         
         # 重置游标并拉取私聊消息
         self._auth_client.reset_session_cursor("private", username)
-        try:
-            messages = self._auth_client.poll_chat_messages("private", username)
-        except Exception as exc:
-            if self._is_ticket_expired_error(exc):
-                self._mark_reauth_required(str(exc))
-                self._poll_timer.stop()
-                return
-            self.chat_view.security_status.set_value("轮询失败", "errorBadge")
-            self.chat_view.add_message(f"安全提示：拉取私聊消息失败，{exc}", "security")
-            return
-        self._display_chat_messages(messages, include_self=True)
+        self._load_session_messages_async("private", username, "私聊")
 
     def _return_to_group_chat(self) -> None:
         """从私聊返回群聊"""
@@ -513,17 +602,7 @@ class MainWindow(QMainWindow):
         
         # 重置游标并拉取群聊消息
         self._auth_client.reset_session_cursor("group", "")
-        try:
-            messages = self._auth_client.poll_chat_messages("group", "")
-        except Exception as exc:
-            if self._is_ticket_expired_error(exc):
-                self._mark_reauth_required(str(exc))
-                self._poll_timer.stop()
-                return
-            self.chat_view.security_status.set_value("轮询失败", "errorBadge")
-            self.chat_view.add_message(f"安全提示：拉取群聊消息失败，{exc}", "security")
-            return
-        self._display_chat_messages(messages, include_self=True)
+        self._load_session_messages_async("group", "", "群聊")
 
     def _handle_relogin(self) -> None:
         """处理重新认证（刷新Kerberos票据和会话密钥）"""
