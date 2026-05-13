@@ -402,6 +402,7 @@ class MainWindow(QMainWindow):
         
         from datetime import datetime
         
+        self.chat_view.begin_message_batch()
         for message in messages:
             message_id = int(message.get("id", 0) or 0)
             session_key = self._view_session_key(
@@ -444,6 +445,7 @@ class MainWindow(QMainWindow):
             sig_val = message.get("sig", "")
             pubkey_val = message.get("pubkey", "")
             self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
+        self.chat_view.end_message_batch()
 
     def _view_session_key(self, chat_type: str = "group", recipient: str = "") -> str:
         """生成视图会话唯一标识"""

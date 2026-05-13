@@ -72,26 +72,15 @@ class MessageBubble(QFrame):
         
         # 消息内容（图片或文本）
         if image_data:
-            # 显示图片（可点击查看大图）
+            # 图片数据可能很大，列表中只显示轻量占位，点击时再解码显示大图。
             self.message_label = QLabel()
-            self.full_image_data = ""
-            try:
-                image_bytes = base64.b64decode(image_data, validate=True)
-                pixmap = QPixmap()
-                if not pixmap.loadFromData(image_bytes):
-                    raise ValueError("invalid image payload")
-            except Exception:
-                self.message_label.setText(f"[图片] {file_name}" if file_name else text)
-            else:
-                self.full_image_data = image_data
-                if pixmap.width() > 300:
-                    scaled_pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
-                else:
-                    scaled_pixmap = pixmap
-                self.message_label.setPixmap(scaled_pixmap)
-                self.message_label.setAlignment(Qt.AlignCenter)
-                self.message_label.setCursor(Qt.PointingHandCursor)
-                self.message_label.mousePressEvent = lambda e: self._show_full_image()
+            self.full_image_data = image_data
+            display_name = file_name or text.replace("[图片]", "").strip()
+            self.message_label.setText(f"[图片] {display_name}\n点击查看")
+            self.message_label.setWordWrap(True)
+            self.message_label.setAlignment(Qt.AlignCenter)
+            self.message_label.setCursor(Qt.PointingHandCursor)
+            self.message_label.mousePressEvent = lambda e: self._show_full_image()
         else:
             # 显示文本消息
             self.message_label = QLabel(text)
@@ -281,7 +270,10 @@ class MessageBubble(QFrame):
         
         if not getattr(self, 'full_image_data', ''):
             return
-        image_bytes = base64.b64decode(self.full_image_data)
+        try:
+            image_bytes = base64.b64decode(self.full_image_data, validate=True)
+        except Exception:
+            return
         
         dialog = QDialog()
         dialog.setWindowTitle(self.file_name if getattr(self, 'file_name', '') else "查看图片")
@@ -292,7 +284,8 @@ class MessageBubble(QFrame):
         scroll_area.setWidgetResizable(True)
         
         pixmap = QPixmap()
-        pixmap.loadFromData(image_bytes)
+        if not pixmap.loadFromData(image_bytes):
+            return
         
         label = QLabel()
         label.setPixmap(pixmap)
@@ -451,6 +444,9 @@ class ChatView(QWidget):
         self.toggle_cipher_button = QPushButton("显示密文")
         self.show_ciphertext = False
         self.message_bubbles: list[MessageBubble] = []
+        self._has_cipher_messages_cache = False
+        self._message_batch_depth = 0
+        self._pending_cipher_refresh = False
         self.is_admin_user = False
         
         # 跟踪当前会话类型和接收者
@@ -600,8 +596,13 @@ class ChatView(QWidget):
         self.message_area.insertWidget(self.message_area.count() - 1, bubble)
         if kind not in ("system", "security"):
             self.message_bubbles.append(bubble)
+            if ciphertext or hmac or sig:
+                self._has_cipher_messages_cache = True
             bubble.set_display_mode(self.show_ciphertext)
-        self._refresh_cipher_toggle_ui()
+        if self._message_batch_depth:
+            self._pending_cipher_refresh = True
+        else:
+            self._refresh_cipher_toggle_ui()
 
     def clear_messages(self) -> None:
         """移除界面上所有显示的消息气泡。"""
@@ -611,7 +612,29 @@ class ChatView(QWidget):
             if widget:
                 widget.deleteLater()
         self.message_bubbles.clear()
-        self._refresh_cipher_toggle_ui()
+        self._has_cipher_messages_cache = False
+        if self._message_batch_depth:
+            self._pending_cipher_refresh = True
+        else:
+            self._refresh_cipher_toggle_ui()
+
+    def begin_message_batch(self) -> None:
+        """开始批量更新消息，暂停重绘以减少 UI 卡顿。"""
+        self._message_batch_depth += 1
+        if self._message_batch_depth == 1:
+            self.setUpdatesEnabled(False)
+
+    def end_message_batch(self) -> None:
+        """结束批量更新消息，恢复重绘并刷新按钮状态。"""
+        if self._message_batch_depth <= 0:
+            return
+        self._message_batch_depth -= 1
+        if self._message_batch_depth == 0:
+            self.setUpdatesEnabled(True)
+            if self._pending_cipher_refresh:
+                self._pending_cipher_refresh = False
+                self._refresh_cipher_toggle_ui()
+            self.update()
 
     def _toggle_cipher_display(self) -> None:
         if not self._has_cipher_messages():
@@ -622,7 +645,7 @@ class ChatView(QWidget):
         self._refresh_cipher_toggle_ui()
 
     def _has_cipher_messages(self) -> bool:
-        return any(bool(bubble.ciphertext) for bubble in self.message_bubbles)
+        return self._has_cipher_messages_cache
 
     def _refresh_cipher_toggle_ui(self) -> None:
         has_cipher = self._has_cipher_messages()
