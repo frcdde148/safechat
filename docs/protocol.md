@@ -1,6 +1,6 @@
 # SafeChat 客户端与服务器通信协议
 
-本文档说明当前版本中客户端、管理员端、AS、TGS、ChatServer 的职责，以及各节点之间的报文字段、加密字段和签名方式。
+本文档说明当前版本中客户端、控制台、AS、TGS、ChatServer 的职责，以及各节点之间的报文字段、加密字段和签名方式。
 
 ## 1. 节点职责
 
@@ -11,13 +11,14 @@
 - 输入用户名、密码和 AS 地址。
 - 完成 Kerberos V4 风格六步认证。
 - 在 `C_V_REQ` 中把本次客户端 RSA 公钥发送给 ChatServer。
-- 使用 `Kc,v` 加密文本和图片消息。
+- 使用 `Kc,v` 加密文本消息；图片正文是否加密由 `performance.encrypt_images` 配置控制。
 - 使用客户端 RSA 私钥对登录后的关键请求签名。
 - 拉取群聊、私聊、离线消息和联系人状态。
+- 在本地按会话缓存最近消息，切换会话时先显示缓存，再后台拉增量。
 
-### 1.2 Admin
+### 1.2 Console
 
-管理员端也是一个 Kerberos 客户端。它先完成普通登录，然后：
+控制台也是一个 Kerberos 客户端。它先完成普通登录，然后：
 
 - 向 AS 申请短期 `admin_token`。
 - 使用 `admin_token` 调用 AS/TGS 管理接口。
@@ -38,6 +39,8 @@ TGS 负责校验 TGT 和 Authenticator，生成 `Kc,v`，签发访问 ChatServer
 ChatServer 负责校验 Service Ticket，完成服务端双向认证，绑定客户端公钥，处理聊天消息、图片消息、在线状态、离线私聊和聊天侧管理操作。
 
 ChatServer 在 `C_V_REQ` 中接收客户端公钥，并绑定到当前 `username + Kc,v` 会话。后续签名校验只信任这个绑定公钥。
+
+ChatServer 对联系人列表使用 1 秒短缓存，并减少 `CHAT_POLL`、`IMAGE_FETCH`、控制台读列表等高频成功读操作的审计写入。
 
 ## 2. 公共消息封装
 
@@ -426,14 +429,15 @@ ChatServer 处理：
 3. 透明图片保存为 PNG；非透明图片保存为 JPEG，质量 75。
 4. 压缩后最大允许 10 MB。
 5. 将图片二进制 Base64 编码。
-6. 使用 `Kc,v` 加密 Base64 字符串。
+6. 如果 `performance.encrypt_images=true`，使用 `Kc,v` 加密 Base64 字符串；否则直接发送 Base64 字符串。
 
 `body` 字段：
 
 | 字段 | 说明 |
 | --- | --- |
 | `ticket_v` | Service Ticket。 |
-| `image_cipher` | 使用 `Kc,v` 加密的图片 Base64 字符串。 |
+| `image_cipher` | 可选。`encrypt_images=true` 时使用 `Kc,v` 加密的图片 Base64 字符串。 |
+| `image_data` | 可选。`encrypt_images=false` 时的图片 Base64 字符串。 |
 | `file_name` | 处理后的文件名。 |
 | `file_size` | 压缩后大小，字节。 |
 | `original_size` | 原始文件大小，字节。 |
@@ -442,11 +446,12 @@ ChatServer 处理：
 
 加密与签名：
 
-- `image_cipher = DES-CBC_Kc,v(base64(image_bytes))`。
+- `encrypt_images=true`：`image_cipher = DES-CBC_Kc,v(base64(image_bytes))`。
+- `encrypt_images=false`：`image_data = base64(image_bytes)`，图片正文不做 DES 加密。
 - `hmac = HMAC-SHA256(Kc,v, canonical_json(body))`。
 - `sig = RSA_sign_client_private(hmac)`。
 
-ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messages.image_data`，并把消息文本保存为 `[图片] file_name`。
+ChatServer 根据请求字段解析图片正文，把 Base64 图片数据写入 `chat_messages.image_data`，并把消息文本保存为 `[图片] file_name`。
 
 ### 5.4 CHAT_POLL：Client -> ChatServer
 
@@ -460,6 +465,8 @@ ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messa
 | `last_seen_id` | 当前会话已看到的最大消息 ID。 |
 | `chat_type` | `group` 或 `private`。 |
 | `recipient` | 私聊对象；群聊为空。 |
+| `limit` | 可选，最多返回条数。当前客户端默认使用 `performance.history_page_size`。 |
+| `history_mode` | 可选。`latest` 表示首次进入会话时拉取最近一页历史；普通轮询不设置或为 `incremental`。 |
 
 加密与签名：
 
@@ -467,6 +474,17 @@ ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messa
 - `hmac = HMAC-SHA256(Kc,v, canonical_json(body))`。
 - `sig = RSA_sign_client_private(hmac)`。
 - ChatServer 使用当前会话绑定公钥验签。
+
+ChatServer 行为：
+
+- `last_seen_id > 0`：只返回该 ID 之后的增量消息。
+- `last_seen_id = 0` 且 `history_mode=latest`：返回当前会话最近 `limit` 条历史，并保持按时间正序展示。
+- 空轮询和正常成功轮询不写审计日志，降低高频 SQLite 写入。
+
+客户端行为：
+
+- 首次进入某会话且本地无缓存时，使用 `history_mode=latest` 拉最近一页。
+- 已有本地会话缓存时，先显示缓存，再用缓存最大消息 ID 拉增量，不再重置游标。
 
 ### 5.5 CHAT_RECV：ChatServer -> Client
 
@@ -478,6 +496,8 @@ ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messa
 | --- | --- |
 | `messages` | 消息列表。 |
 | `room` | 当前会话键。 |
+| `limit` | 本次服务端使用的返回上限。 |
+| `history_mode` | `latest` 或 `incremental`。 |
 
 每条消息字段：
 
@@ -500,11 +520,11 @@ ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messa
 - `message_cipher = DES-CBC_当前拉取者Kc,v(message_text)`。
 - 图片正文不随 `CHAT_POLL` 返回，客户端后续通过 `IMAGE_FETCH` 单独拉取。
 
-客户端收到后解密 `message_cipher`，图片气泡用后台线程生成缩略图。
+客户端收到后解密 `message_cipher`。如果消息包含图片，先显示图片占位；图片正文加载后再由后台线程生成缩略图。
 
 ### 5.6 IMAGE_FETCH：Client -> ChatServer
 
-用途：按消息 ID 拉取图片正文。这样会话切换时 `CHAT_POLL` 不需要加密和传输大图片，聊天记录可以先显示，图片随后异步加载。
+用途：按消息 ID 拉取图片正文。这样会话切换时 `CHAT_POLL` 不需要加密和传输大图片，聊天记录可以先显示，图片随后异步或按需加载。
 
 请求 `body`：
 
@@ -524,12 +544,19 @@ ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messa
 | 字段 | 说明 |
 | --- | --- |
 | `message_id` | 图片消息 ID。 |
-| `image_cipher` | 使用当前请求者 `Kc,v` 加密的图片 Base64 字符串。 |
+| `image_cipher` | 可选。`encrypt_images=true` 时使用当前请求者 `Kc,v` 加密的图片 Base64 字符串。 |
+| `image_data` | 可选。`encrypt_images=false` 时返回图片 Base64 字符串。 |
 | `file_name` | 图片文件名。 |
 
 加密情况：
 
-- `image_cipher = DES-CBC_当前请求者Kc,v(image_base64)`。
+- `encrypt_images=true`：`image_cipher = DES-CBC_当前请求者Kc,v(image_base64)`。
+- `encrypt_images=false`：返回 `image_data`，不额外加密图片正文。
+
+客户端行为：
+
+- 图片不加密时，可自动拉取图片正文并生成缩略图。
+- 图片加密时，历史图片默认只显示占位，点击图片时才拉取并解密，避免切换会话时批量解密。
 
 ### 5.7 USER_LIST：Client -> ChatServer
 
@@ -555,6 +582,12 @@ ChatServer 解密 `image_cipher` 后，把 Base64 图片数据写入 `chat_messa
 | `count` | 联系人数。 |
 
 联系人包含用户名、角色、在线状态、IP、最后在线时间、禁言信息等字段，具体取决于 ChatServer 当前联系人查询结果。
+
+性能说明：
+
+- ChatServer 对 `USER_LIST` 使用 1 秒内存短缓存。
+- 用户登录、首次活跃、在线超时、禁言/解禁、踢人、改角色、删除用户、会话撤销等状态变化会立即清空缓存。
+- 正常成功的 `USER_LIST` 不写审计日志；签名失败仍写安全审计。
 
 ## 6. 离线消息
 
@@ -607,7 +640,7 @@ AS 校验用户名、session ID 和客户端地址后更新会话时间。
 
 ### 8.1 AS 管理接口
 
-管理员端先用 `AS_ADMIN_TOKEN_REQ` 获取 `admin_token`。
+控制台先用 `AS_ADMIN_TOKEN_REQ` 获取 `admin_token`。
 
 `AS_ADMIN_TOKEN_REQ.body`：
 
@@ -698,7 +731,29 @@ ChatServer 管理接口使用 Service Ticket 和客户端签名，不使用 `adm
 - 会话已被管理员撤销。
 - 需要管理员权限。
 
-## 10. 通信时序总览
+## 10. 性能与缓存策略
+
+### 10.1 客户端会话缓存
+
+客户端为每个会话保留最近 `performance.history_page_size` 条已解密消息。
+
+- 切换到已有缓存的会话时，客户端立即渲染缓存。
+- 随后用缓存中的最大消息 ID 恢复增量游标，并后台拉取新消息。
+- 只有首次进入某个没有缓存的会话时，才请求 `history_mode=latest` 的最近历史页。
+- 缓存仅存在于客户端进程内，客户端重启后会重新加载最近历史页。
+
+### 10.2 图片加载策略
+
+- `encrypt_images=false`：图片传输和拉取更快，客户端可自动生成缩略图。
+- `encrypt_images=true`：图片正文加密，但历史图片默认按需点击加载，避免切换会话时批量解密。
+
+### 10.3 ChatServer 高频请求优化
+
+- `USER_LIST` 使用 1 秒内存缓存。
+- `CHAT_POLL`、`IMAGE_FETCH`、`CHAT_ADMIN_LIST_MESSAGES` 等正常成功读操作不逐条写审计日志。
+- 签名失败、权限失败、会话撤销、管理写操作、普通消息写入仍保留审计。
+
+## 11. 通信时序总览
 
 ```mermaid
 sequenceDiagram
@@ -713,10 +768,11 @@ sequenceDiagram
     TGS-->>C: TGS_C_REP(E_Kc,tgs[Kc,v, Service Ticket, ChatServer地址])
     C->>V: C_V_REQ(Service Ticket, E_Kc,v[Authenticator], public_key_pem)
     V-->>C: V_C_REP(E_Kc,v[ts_5 + 1], offline_messages)
-    C->>V: CHAT_SEND/IMAGE_SEND(E_Kc,v[内容], hmac, sig)
+    C->>V: CHAT_SEND(E_Kc,v[文本], hmac, sig)
+    C->>V: IMAGE_SEND(image_data 或 E_Kc,v[图片Base64], hmac, sig)
     V-->>C: CHAT_ACK(E_Kc,v[确认文本])
-    C->>V: CHAT_POLL(ticket_v, last_seen_id, hmac, sig)
+    C->>V: CHAT_POLL(ticket_v, last_seen_id, history_mode, hmac, sig)
     V-->>C: CHAT_RECV(E_Kc,v[消息文本], has_image可选)
     C->>V: IMAGE_FETCH(ticket_v, message_id, hmac, sig)
-    V-->>C: CHAT_RECV(E_Kc,v[图片Base64])
+    V-->>C: CHAT_RECV(image_data 或 E_Kc,v[图片Base64])
 ```

@@ -1,10 +1,10 @@
-"""SafeChat 端到端回归测试。
+"""SafeChat 性能 smoke 测试。
 
 运行方式：
-    python tests/e2e_smoke.py
+    python tests/perf_smoke.py
 
-脚本会使用临时配置、临时数据库和临时端口启动 AS/TGS/ChatServer，
-不会修改 common/config/settings.json 或正式数据库。
+该脚本使用临时数据库和真实 TCP 服务，输出关键路径耗时。
+阈值刻意宽松，用于发现明显性能回退。
 """
 
 from __future__ import annotations
@@ -13,22 +13,40 @@ import base64
 import json
 import os
 import socket
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable, TypeVar
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AUTH_STAGES = ("C_AS_REQ", "AS_C_REP", "C_TGS_REQ", "TGS_C_REP", "C_V_REQ", "V_C_REP")
+T = TypeVar("T")
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="safechat-e2e-") as tmp:
+    results = []
+    results.extend(_run_perf_case("图片不加密", encrypt_images=False))
+    results.extend(_run_perf_case("图片加密", encrypt_images=True))
+
+    print("\n性能结果：")
+    for name, elapsed_ms in results:
+        print(f"- {name}: {elapsed_ms:.1f} ms")
+
+    _assert_under(results, "空轮询平均", 300.0)
+    _assert_under(results, "USER_LIST 缓存平均", 300.0)
+    _assert_under(results, "最近历史页", 2000.0)
+    return 0
+
+
+def _run_perf_case(label: str, encrypt_images: bool) -> list[tuple[str, float]]:
+    with tempfile.TemporaryDirectory(prefix="safechat-perf-", ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         ports = _allocate_ports(3)
-        settings_path = _write_settings(tmp_path, ports)
+        settings_path = _write_settings(tmp_path, ports, encrypt_images)
         env = os.environ.copy()
         env["SAFECHAT_SETTINGS_PATH"] = str(settings_path)
         env["PYTHONUNBUFFERED"] = "1"
@@ -43,40 +61,27 @@ def main() -> int:
             _wait_for_port("127.0.0.1", ports["as"], "AS")
             _wait_for_port("127.0.0.1", ports["tgs"], "TGS")
             _wait_for_port("127.0.0.1", ports["chat"], "ChatServer")
-            _run_scenarios(ports, tmp_path)
-        except Exception as exc:
-            print(f"[失败] {exc}")
-            for process in processes:
-                _stop_process(process)
-            _print_server_logs(processes)
-            return 1
+            return _measure_scenarios(label, ports, tmp_path)
         finally:
             for process in processes:
                 _stop_process(process)
 
-    print("[通过] SafeChat 端到端 smoke 测试完成")
-    return 0
 
-
-def _write_settings(tmp_path: Path, ports: dict[str, int]) -> Path:
+def _write_settings(tmp_path: Path, ports: dict[str, int], encrypt_images: bool) -> Path:
     settings = {
-        "as_server": {
-            "bind_host": "127.0.0.1",
-            "public_host": "127.0.0.1",
-            "port": ports["as"],
-        },
+        "as_server": {"bind_host": "127.0.0.1", "public_host": "127.0.0.1", "port": ports["as"]},
         "tgs_server": {
             "bind_host": "127.0.0.1",
             "public_host": "127.0.0.1",
             "port": ports["tgs"],
-            "service_key": "e2e-tgs-key",
+            "service_key": "perf-tgs-key",
         },
         "chat_server": {
             "bind_host": "127.0.0.1",
             "public_host": "127.0.0.1",
             "port": ports["chat"],
             "service_name": "chat_server",
-            "service_key": "e2e-chat-key",
+            "service_key": "perf-chat-key",
         },
         "database": {
             "path": str(tmp_path / "chatroom.db"),
@@ -94,11 +99,11 @@ def _write_settings(tmp_path: Path, ports: dict[str, int]) -> Path:
             "signature": "rsa-1024",
             "ticket_cipher": "des",
             "audit_content_cipher": "des",
-            "admin_token_secret": "safechat-e2e-admin-token-secret",
+            "admin_token_secret": "safechat-perf-admin-token-secret",
         },
         "performance": {
             "history_page_size": 80,
-            "encrypt_images": False,
+            "encrypt_images": encrypt_images,
         },
     }
     path = tmp_path / "settings.json"
@@ -106,7 +111,7 @@ def _write_settings(tmp_path: Path, ports: dict[str, int]) -> Path:
     return path
 
 
-def _run_scenarios(ports: dict[str, int], tmp_path: Path) -> None:
+def _measure_scenarios(label: str, ports: dict[str, int], tmp_path: Path) -> list[tuple[str, float]]:
     os.environ["SAFECHAT_SETTINGS_PATH"] = str(tmp_path / "settings.json")
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -114,49 +119,61 @@ def _run_scenarios(ports: dict[str, int], tmp_path: Path) -> None:
 
     alice = _login(AuthClient, "alice", "alice123", ports)
     bob = _login(AuthClient, "bob", "bob123", ports)
+    admin = _login(AuthClient, "admin", "admin123", ports, client_type="admin_console")
 
-    sent_text = f"e2e 文本消息 {int(time.time())}"
-    alice.send_chat_message(sent_text)
-    bob_messages = _poll_until(lambda: bob.poll_chat_messages(), lambda messages: _has_text(messages, sent_text))
-    assert _has_text(bob_messages, sent_text), "bob 未收到 alice 的群聊文本"
-
-    image_path = tmp_path / "tiny.png"
-    _write_tiny_png(image_path)
-    image_result = alice.send_image(str(image_path))
-    assert image_result["success"], "alice 图片发送失败"
-    image_id = int(image_result["message_id"])
+    seed_count = 100
+    start = time.perf_counter()
+    for idx in range(seed_count):
+        alice.send_chat_message(f"perf-{label}-{idx}")
+    seed_ms = _elapsed_ms(start)
 
     bob.reset_session_cursor("group", "")
-    image_messages = _poll_until(lambda: bob.poll_chat_messages(), lambda messages: any(m["id"] == image_id and m.get("has_image") for m in messages))
-    assert any(m["id"] == image_id and m.get("has_image") for m in image_messages), "bob 未收到图片占位消息"
-    image_payload = bob.fetch_message_image(image_id)
-    assert image_payload["image_data"], "IMAGE_FETCH 未返回图片数据"
+    _, history_ms = _timed(lambda: bob.poll_chat_messages(history_mode="latest"))
 
-    offline_text = f"e2e 离线私聊 {int(time.time())}"
-    alice.send_chat_message(offline_text, chat_type="private", recipient="carol")
-    carol = _login(AuthClient, "carol", "carol123", ports)
-    offline_messages = carol.get_offline_messages()
-    assert _has_text(offline_messages, offline_text), "carol 登录后未收到离线私聊"
+    _, empty_poll_ms = _average_time(lambda: bob.poll_chat_messages(), count=20)
+    _, user_list_ms = _average_time(lambda: bob.fetch_online_users(), count=20)
+    _, admin_list_ms = _timed(lambda: admin.chat_admin_list_messages(limit=80))
 
-    admin = _login(AuthClient, "admin", "admin123", ports, client_type="admin_console")
-    token = admin.request_admin_token()
-    assert token, "控制台未获取 admin_token"
-    admin.admin_mute_user("alice", duration_seconds=60, reason="e2e 禁言")
-    try:
-        alice.send_chat_message("这条消息应被禁言拒绝")
-        raise AssertionError("alice 被禁言后仍能发送消息")
-    except RuntimeError as exc:
-        assert "禁言" in str(exc), f"禁言错误提示不符合预期：{exc}"
-    admin.admin_unmute_user("alice")
-    alice.send_chat_message("e2e 解除禁言后消息")
+    image_path = tmp_path / "perf.png"
+    _write_test_png(image_path, repeat=128)
+    image_result, image_send_ms = _timed(lambda: alice.send_image(str(image_path)))
+    image_id = int(image_result["message_id"])
+    _, image_fetch_ms = _timed(lambda: bob.fetch_message_image(image_id))
 
-    kick_result = admin.admin_kick_user("bob")
-    assert kick_result.get("target_username") == "bob", "踢出用户响应缺少目标用户"
-    try:
-        bob.poll_chat_messages()
-        raise AssertionError("bob 被踢出后仍能继续轮询")
-    except RuntimeError as exc:
-        assert "会话已被撤销" in str(exc) or "SESSION_REVOKED" in str(exc), f"踢出后的错误提示不符合预期：{exc}"
+    return [
+        (f"{label} 写入 {seed_count} 条文本", seed_ms),
+        (f"{label} 最近历史页", history_ms),
+        (f"{label} 空轮询平均", empty_poll_ms),
+        (f"{label} USER_LIST 缓存平均", user_list_ms),
+        (f"{label} 控制台查 80 条", admin_list_ms),
+        (f"{label} 发送图片", image_send_ms),
+        (f"{label} 拉取图片", image_fetch_ms),
+    ]
+
+
+def _timed(fn: Callable[[], T]) -> tuple[T, float]:
+    start = time.perf_counter()
+    value = fn()
+    return value, _elapsed_ms(start)
+
+
+def _average_time(fn: Callable[[], T], count: int) -> tuple[T, float]:
+    values = []
+    last_value = None
+    for _ in range(count):
+        last_value, elapsed = _timed(fn)
+        values.append(elapsed)
+    return last_value, statistics.mean(values)
+
+
+def _elapsed_ms(start: float) -> float:
+    return (time.perf_counter() - start) * 1000
+
+
+def _assert_under(results: list[tuple[str, float]], key: str, limit_ms: float) -> None:
+    matched = [(name, value) for name, value in results if key in name]
+    for name, value in matched:
+        assert value < limit_ms, f"{name} 过慢：{value:.1f} ms >= {limit_ms:.1f} ms"
 
 
 def _login(auth_client_cls, username: str, password: str, ports: dict[str, int], client_type: str = "client"):
@@ -175,27 +192,13 @@ def _login(auth_client_cls, username: str, password: str, ports: dict[str, int],
     return client
 
 
-def _poll_until(fetch, predicate, timeout: float = 10.0):
-    deadline = time.time() + timeout
-    last_value = []
-    while time.time() < deadline:
-        last_value = fetch()
-        if predicate(last_value):
-            return last_value
-        time.sleep(0.25)
-    return last_value
-
-
-def _has_text(messages: list[dict], text: str) -> bool:
-    return any(message.get("text") == text for message in messages)
-
-
-def _write_tiny_png(path: Path) -> None:
+def _write_test_png(path: Path, repeat: int) -> None:
     png_b64 = (
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
         "/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
     )
-    path.write_bytes(base64.b64decode(png_b64))
+    data = base64.b64decode(png_b64)
+    path.write_bytes(data * max(1, repeat))
 
 
 def _allocate_ports(count: int) -> dict[str, int]:
@@ -243,18 +246,6 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)
-
-
-def _print_server_logs(processes: list[subprocess.Popen[str]]) -> None:
-    for process in processes:
-        if not process.stdout:
-            continue
-        try:
-            output = process.stdout.read()
-        except Exception:
-            output = ""
-        if output:
-            print(output)
 
 
 if __name__ == "__main__":

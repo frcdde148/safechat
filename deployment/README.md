@@ -1,8 +1,8 @@
 # SafeChat 联机测试配置
 
-项目只保留两种配置场景：
+项目保留两种配置场景：
 
-- 本地开发测试：使用 `common/config/settings.json`，全部地址为 `127.0.0.1`。
+- 本地开发测试：使用 `common/config/settings.json`，单机运行时建议全部地址为 `127.0.0.1`。
 - 联机测试：复制 `deployment/connection.settings.json` 到 `common/config/settings.json`，替换三台服务器 IP。
 
 联机测试需要替换：
@@ -28,3 +28,16 @@ start_admin.bat
 ```
 
 服务器启动时会自动初始化自己的数据库，不需要先手动初始化。
+
+联机配置同样支持性能字段：
+
+```json
+"performance": {
+  "history_page_size": 80,
+  "encrypt_images": false
+}
+```
+
+- 单机验收推荐 `bind_host=127.0.0.1`、`public_host=127.0.0.1`。
+- 多机联调时服务器 `bind_host=0.0.0.0`，`public_host` 填其他主机可访问的局域网 IP。
+- `encrypt_images=false` 更适合演示图片流畅体验；需要展示图片正文加密时可改为 `true`，并重启 ChatServer 和客户端。
