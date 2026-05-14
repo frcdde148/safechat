@@ -464,7 +464,12 @@ class MainWindow(QMainWindow):
         session_key = self._view_session_key(chat_type, recipient)
         cached_messages = self._session_message_cache.get(session_key, [])
         if cached_messages:
-            self._display_chat_messages(cached_messages, include_self=True, cache_messages=False)
+            self._display_chat_messages(
+                cached_messages,
+                include_self=True,
+                cache_messages=False,
+                scroll_to_latest=True,
+            )
             self._session_message_cache.move_to_end(session_key)
             self._ensure_session_cursor(chat_type, recipient, cached_messages)
             self._load_session_messages_async(chat_type, recipient, label, history_mode="incremental")
@@ -515,7 +520,11 @@ class MainWindow(QMainWindow):
             current = self.chat_view.current_session()
             if current["chat_type"] != done_type or current["recipient"] != done_recipient:
                 return
-            self._display_chat_messages(messages, include_self=True)
+            self._display_chat_messages(
+                messages,
+                include_self=True,
+                scroll_to_latest=history_mode == "latest",
+            )
 
         def on_error(done_type: str, done_recipient: str, exc: Exception) -> None:
             if generation != self._session_load_generation:
@@ -546,6 +555,7 @@ class MainWindow(QMainWindow):
         messages: list[dict],
         include_self: bool = False,
         cache_messages: bool = True,
+        scroll_to_latest: bool = False,
     ) -> None:
         """显示聊天消息
         
@@ -558,7 +568,7 @@ class MainWindow(QMainWindow):
         
         from datetime import datetime
         
-        self.chat_view.begin_message_batch()
+        self.chat_view.begin_message_batch(scroll_to_latest=scroll_to_latest)
         try:
             for message in messages:
                 message_id = int(message.get("id", 0) or 0)
