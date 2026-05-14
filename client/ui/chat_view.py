@@ -7,7 +7,7 @@ import hashlib
 import queue
 from collections import OrderedDict
 
-from PyQt5.QtCore import QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QFont
 from PyQt5.QtWidgets import (
     QFrame,
@@ -495,6 +495,7 @@ class ChatView(QWidget):
     return_to_group_chat_requested = pyqtSignal()
     relogin_requested = pyqtSignal()
     image_send_requested = pyqtSignal()
+    image_open_requested = pyqtSignal(object)
     private_chat_requested = pyqtSignal(str)
     mute_user_requested = pyqtSignal(str)
     unmute_user_requested = pyqtSignal(str)
@@ -506,6 +507,7 @@ class ChatView(QWidget):
         self.user_list = QListWidget()
         self.group_chat_button = QPushButton("进入群聊大厅")
         self.message_area = QVBoxLayout()
+        self.message_scroll: QScrollArea | None = None
         self.message_input = QTextEdit()
         self.send_button = QPushButton("发送")
         self.toggle_cipher_button = QPushButton("显示密文")
@@ -599,11 +601,11 @@ class ChatView(QWidget):
         self.message_area.addStretch(1)
         scroll_content.setLayout(self.message_area)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(scroll_content)
-        layout.addWidget(scroll, 1)
+        self.message_scroll = QScrollArea()
+        self.message_scroll.setWidgetResizable(True)
+        self.message_scroll.setFrameShape(QFrame.NoFrame)
+        self.message_scroll.setWidget(scroll_content)
+        layout.addWidget(self.message_scroll, 1)
 
         self.message_input.setPlaceholderText("输入消息")
         self.message_input.setFixedHeight(76)
@@ -674,6 +676,8 @@ class ChatView(QWidget):
             bubble.set_display_mode(self.show_ciphertext)
             if image_data:
                 self._request_thumbnail(bubble, image_data, file_name)
+            if image_data or file_name:
+                bubble.message_label.mousePressEvent = lambda event, item=bubble: self._handle_image_click(item)
         if self._message_batch_depth:
             self._pending_cipher_refresh = True
         else:
@@ -698,6 +702,12 @@ class ChatView(QWidget):
         waiters.append(bubble)
         if len(waiters) == 1:
             self._thumbnail_worker.enqueue(key, image_data)
+
+    def _handle_image_click(self, bubble: MessageBubble) -> None:
+        if getattr(bubble, "full_image_data", ""):
+            bubble._show_full_image()
+            return
+        self.image_open_requested.emit(bubble)
 
     @staticmethod
     def _thumbnail_key(image_data: str, file_name: str) -> str:
@@ -751,6 +761,14 @@ class ChatView(QWidget):
                 self._pending_cipher_refresh = False
                 self._refresh_cipher_toggle_ui()
             self.update()
+            QTimer.singleShot(0, self.scroll_to_latest)
+
+    def scroll_to_latest(self) -> None:
+        """滚动到最新消息。"""
+        if not self.message_scroll:
+            return
+        bar = self.message_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _toggle_cipher_display(self) -> None:
         if not self._has_cipher_messages():
