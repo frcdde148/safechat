@@ -744,9 +744,11 @@ class ChatView(QWidget):
         else:
             self._refresh_cipher_toggle_ui()
 
-    def begin_message_batch(self) -> None:
+    def begin_message_batch(self, scroll_to_latest: bool = False) -> None:
         """开始批量更新消息，暂停重绘以减少 UI 卡顿。"""
         self._message_batch_depth += 1
+        if scroll_to_latest:
+            self._pending_scroll_to_latest = True
         if self._message_batch_depth == 1:
             self.setUpdatesEnabled(False)
 
@@ -761,7 +763,9 @@ class ChatView(QWidget):
                 self._pending_cipher_refresh = False
                 self._refresh_cipher_toggle_ui()
             self.update()
-            QTimer.singleShot(0, self.scroll_to_latest)
+            if getattr(self, "_pending_scroll_to_latest", False):
+                self._pending_scroll_to_latest = False
+                QTimer.singleShot(0, self.scroll_to_latest)
 
     def scroll_to_latest(self) -> None:
         """滚动到最新消息。"""
