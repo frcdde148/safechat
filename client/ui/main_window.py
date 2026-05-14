@@ -45,8 +45,10 @@ class MainWindow(QMainWindow):
         self._image_fetch_inflight: set[int] = set()   # 正在拉取的图片消息ID
         self._session_load_threads: list[QThread] = []  # 会话切换加载线程列表
         self._session_load_generation = 0             # 会话加载版本号（忽略过期结果）
+        self._session_message_cache: OrderedDict[str, list[dict]] = OrderedDict()  # 会话消息缓存
         self._image_data_cache: OrderedDict[int, tuple[str, str]] = OrderedDict()  # 已解密图片缓存
         self._visible_message_ids: set[tuple[str, int]] = set()  # 已显示的消息ID
+        self._bubble_message_ids: dict[object, int] = {}    # 图片气泡到消息ID的映射
         self._user_refresh_thread: QThread | None = None  # 在线用户刷新线程
         self._last_user_refresh_at = 0.0              # 在线用户最近刷新时间
         self._last_user_refresh_error_at = 0.0        # 在线用户刷新错误提示时间
@@ -70,6 +72,7 @@ class MainWindow(QMainWindow):
         self.chat_view.return_to_group_chat_requested.connect(self._return_to_group_chat)
         self.chat_view.relogin_requested.connect(self._handle_relogin)
         self.chat_view.image_send_requested.connect(self._send_image)
+        self.chat_view.image_open_requested.connect(self._open_message_image)
         self.chat_view.mute_user_requested.connect(self._mute_user)
         self.chat_view.unmute_user_requested.connect(self._unmute_user)
 
@@ -248,6 +251,21 @@ class MainWindow(QMainWindow):
 
             # 显示发送的消息（包含安全层信息）
             self.chat_view.add_message(text, "self", ciphertext, "", "", self._auth_client.username, timestamp, hmac_digest, signature, pubkey)
+            if message_id:
+                self._remember_session_message(
+                    self._view_session_key(session["chat_type"], session["recipient"]),
+                    {
+                        "id": message_id,
+                        "sender": self._auth_client.username,
+                        "recipient": session["recipient"],
+                        "chat_type": session["chat_type"],
+                        "timestamp": int(time.time() * 1000),
+                        "text": text,
+                        "ciphertext": ciphertext,
+                        "hmac": hmac_digest,
+                        "sig": signature,
+                    },
+                )
             
             # 处理服务器回执
             ack = result.get("ack", "")
@@ -429,20 +447,38 @@ class MainWindow(QMainWindow):
 
     def _switch_chat_session(self) -> None:
         """切换聊天会话（群聊/私聊）"""
+        session = self.chat_view.current_session()
+        self._activate_session(session["chat_type"], session["recipient"], session["title"], "会话")
+
+    def _activate_session(self, chat_type: str, recipient: str, title: str, label: str) -> None:
+        """切换 UI 到指定会话，先显示本地缓存，再后台同步。"""
         self.chat_view.clear_messages()
         self._visible_message_ids.clear()
-        session = self.chat_view.current_session()
-        self.chat_view.session_type_status.set_value(session["title"], "okBadge")
-        self.chat_view.add_message(f"系统通知：已切换到 {session['title']}", "system")
-        
+        self._bubble_message_ids.clear()
+        self.chat_view.session_type_status.set_value(title, "okBadge")
+        self.chat_view.add_message(f"系统通知：已切换到 {title}", "system")
+
         if not self._auth_client:
             return
-        
-        # 重置会话游标并拉取消息
-        self._auth_client.reset_session_cursor(session["chat_type"], session["recipient"])
-        self._load_session_messages_async(session["chat_type"], session["recipient"], "会话")
 
-    def _load_session_messages_async(self, chat_type: str, recipient: str, label: str) -> None:
+        session_key = self._view_session_key(chat_type, recipient)
+        cached_messages = self._session_message_cache.get(session_key, [])
+        if cached_messages:
+            self._display_chat_messages(cached_messages, include_self=True, cache_messages=False)
+            self._session_message_cache.move_to_end(session_key)
+            self._ensure_session_cursor(chat_type, recipient, cached_messages)
+            self._load_session_messages_async(chat_type, recipient, label, history_mode="incremental")
+        else:
+            self._auth_client.reset_session_cursor(chat_type, recipient)
+            self._load_session_messages_async(chat_type, recipient, label, history_mode="latest")
+
+    def _load_session_messages_async(
+        self,
+        chat_type: str,
+        recipient: str,
+        label: str,
+        history_mode: str = "incremental",
+    ) -> None:
         """后台加载当前会话消息，避免图片解密阻塞 UI。"""
         if not self._auth_client:
             return
@@ -451,18 +487,19 @@ class MainWindow(QMainWindow):
             result_ready = pyqtSignal(str, str, list)
             error = pyqtSignal(str, str, Exception)
 
-            def __init__(self, auth_client: AuthClient, chat_type: str, recipient: str) -> None:
+            def __init__(self, auth_client: AuthClient, chat_type: str, recipient: str, history_mode: str) -> None:
                 super().__init__()
                 self.auth_client = auth_client
                 self.chat_type = chat_type
                 self.recipient = recipient
+                self.history_mode = history_mode
 
             def run(self) -> None:
                 try:
                     messages = self.auth_client.poll_chat_messages(
                         self.chat_type,
                         self.recipient,
-                        history_mode="latest",
+                        history_mode=self.history_mode,
                     )
                     self.result_ready.emit(self.chat_type, self.recipient, messages)
                 except Exception as exc:
@@ -470,7 +507,7 @@ class MainWindow(QMainWindow):
 
         self._session_load_generation += 1
         generation = self._session_load_generation
-        thread = SessionLoadThread(self._auth_client, chat_type, recipient)
+        thread = SessionLoadThread(self._auth_client, chat_type, recipient, history_mode)
 
         def on_finished(done_type: str, done_recipient: str, messages: list) -> None:
             if generation != self._session_load_generation:
@@ -504,7 +541,12 @@ class MainWindow(QMainWindow):
         self._session_load_threads.append(thread)
         thread.start()
 
-    def _display_chat_messages(self, messages: list[dict], include_self: bool = False) -> None:
+    def _display_chat_messages(
+        self,
+        messages: list[dict],
+        include_self: bool = False,
+        cache_messages: bool = True,
+    ) -> None:
         """显示聊天消息
         
         参数:
@@ -520,10 +562,7 @@ class MainWindow(QMainWindow):
         try:
             for message in messages:
                 message_id = int(message.get("id", 0) or 0)
-                session_key = self._view_session_key(
-                    message.get("chat_type", "group"),
-                    message.get("recipient", ""),
-                )
+                session_key = self._message_session_key(message)
                 visible_key = (session_key, message_id)
                 
                 # 跳过已显示的消息
@@ -538,6 +577,8 @@ class MainWindow(QMainWindow):
                 # 记录已显示的消息ID
                 if message_id:
                     self._visible_message_ids.add(visible_key)
+                if cache_messages:
+                    self._remember_session_message(session_key, message)
                 
                 # 准备消息参数
                 kind = "self" if is_self else "peer"
@@ -565,16 +606,29 @@ class MainWindow(QMainWindow):
                 sig_val = message.get("sig", "")
                 pubkey_val = message.get("pubkey", "")
                 bubble = self.chat_view.add_message(message['text'], kind, ciphertext, image_data, file_name, username, timestamp, hmac_val, sig_val, pubkey_val)
-                if has_image and not image_data and message_id:
+                if has_image and message_id:
+                    self._bubble_message_ids[bubble] = message_id
+                if (
+                    has_image
+                    and not image_data
+                    and message_id
+                    and not getattr(self._auth_client, "encrypt_images", False)
+                ):
                     self._fetch_message_image_async(message_id, bubble, file_name)
         finally:
             self.chat_view.end_message_batch()
 
-    def _fetch_message_image_async(self, message_id: int, bubble, file_name: str) -> None:
+    def _fetch_message_image_async(self, message_id: int, bubble, file_name: str, open_after_load: bool = False) -> None:
         """后台拉取单条图片正文，避免阻塞会话消息列表。"""
         if not self._auth_client:
             return
-        if message_id in self._image_data_cache or message_id in self._image_fetch_inflight:
+        if message_id in self._image_data_cache:
+            image_data, cached_name = self._image_data_cache[message_id]
+            self.chat_view.set_message_image(bubble, image_data, cached_name or file_name)
+            if open_after_load:
+                bubble._show_full_image()
+            return
+        if message_id in self._image_fetch_inflight:
             return
 
         class ImageFetchThread(QThread):
@@ -600,6 +654,8 @@ class MainWindow(QMainWindow):
             display_name = done_file_name or file_name
             self._remember_image_data(done_id, image_data, display_name)
             self.chat_view.set_message_image(bubble, image_data, display_name)
+            if open_after_load and bubble in self.chat_view.message_bubbles:
+                bubble._show_full_image()
 
         def on_error(done_id: int, exc: Exception) -> None:
             pass
@@ -616,12 +672,51 @@ class MainWindow(QMainWindow):
         self._image_fetch_threads.append(thread)
         thread.start()
 
+    def _open_message_image(self, bubble) -> None:
+        """按需拉取并打开图片，避免切换会话时批量解密图片。"""
+        message_id = self._bubble_message_ids.get(bubble)
+        if not message_id:
+            return
+        if getattr(bubble, "full_image_data", ""):
+            bubble._show_full_image()
+            return
+        self.chat_view.security_status.set_value("正在加载图片", "warnBadge")
+        self._fetch_message_image_async(message_id, bubble, getattr(bubble, "file_name", ""), open_after_load=True)
+
     def _remember_image_data(self, message_id: int, image_data: str, file_name: str) -> None:
         """缓存已解密图片正文，限制内存占用。"""
         self._image_data_cache[message_id] = (image_data, file_name)
         self._image_data_cache.move_to_end(message_id)
         while len(self._image_data_cache) > 60:
             self._image_data_cache.popitem(last=False)
+
+    def _remember_session_message(self, session_key: str, message: dict) -> None:
+        """缓存会话最近消息，避免切换会话时反复从服务器加载。"""
+        messages = self._session_message_cache.setdefault(session_key, [])
+        message_id = int(message.get("id", 0) or 0)
+        if message_id and any(int(item.get("id", 0) or 0) == message_id for item in messages):
+            return
+        messages.append(dict(message))
+        messages.sort(key=lambda item: int(item.get("id", 0) or 0))
+        limit = max(20, int(getattr(self._auth_client, "history_page_size", 80) or 80))
+        if len(messages) > limit:
+            del messages[:-limit]
+        self._session_message_cache.move_to_end(session_key)
+        while len(self._session_message_cache) > 12:
+            self._session_message_cache.popitem(last=False)
+
+    def _ensure_session_cursor(self, chat_type: str, recipient: str, messages: list[dict]) -> None:
+        """用缓存里的最大消息 ID 恢复增量游标。"""
+        if not self._auth_client or not messages:
+            return
+        max_id = max((int(item.get("id", 0) or 0) for item in messages), default=0)
+        if not max_id:
+            return
+        session_key = self._auth_client._session_key(chat_type, recipient)
+        self._auth_client.last_message_ids[session_key] = max(
+            self._auth_client.last_message_ids.get(session_key, 0),
+            max_id,
+        )
 
     def closeEvent(self, event) -> None:
         """关闭窗口前停止后台线程，避免 QThread 析构时仍在运行。"""
@@ -667,6 +762,18 @@ class MainWindow(QMainWindow):
             return f"private:{users[0]}:{users[1]}"
         return "group:public"
 
+    def _message_session_key(self, message: dict) -> str:
+        """根据消息内容推断其所属会话。"""
+        if not self._auth_client:
+            return "group:public"
+        chat_type = message.get("chat_type", "group")
+        if chat_type != "private":
+            return "group:public"
+        sender = message.get("sender", "")
+        recipient = message.get("recipient", "")
+        peer = recipient if sender == self._auth_client.username else sender
+        return self._view_session_key("private", peer)
+
     def _open_private_chat(self, username: str) -> None:
         """打开与指定用户的私聊
         
@@ -684,35 +791,14 @@ class MainWindow(QMainWindow):
         # 设置当前会话为私聊
         self.chat_view.set_current_session("private", username)
         
-        # 清空消息并切换到私聊
-        self.chat_view.clear_messages()
-        self._visible_message_ids.clear()
-        self.chat_view.session_type_status.set_value(f"私聊 {username}", "okBadge")
-        self.chat_view.add_message(f"系统通知：已切换到私聊 {username}", "system")
-        
-        if not self._auth_client:
-            return
-        
-        # 重置游标并拉取私聊消息
-        self._auth_client.reset_session_cursor("private", username)
-        self._load_session_messages_async("private", username, "私聊")
+        self._activate_session("private", username, f"私聊 {username}", "私聊")
 
     def _return_to_group_chat(self) -> None:
         """从私聊返回群聊"""
         # 设置当前会话为群聊
         self.chat_view.set_current_session("group", "")
         
-        self.chat_view.clear_messages()
-        self._visible_message_ids.clear()
-        self.chat_view.session_type_status.set_value("群聊大厅", "okBadge")
-        self.chat_view.add_message("系统通知：已切换到群聊大厅", "system")
-        
-        if not self._auth_client:
-            return
-        
-        # 重置游标并拉取群聊消息
-        self._auth_client.reset_session_cursor("group", "")
-        self._load_session_messages_async("group", "", "群聊")
+        self._activate_session("group", "", "群聊大厅", "群聊")
 
     def _handle_relogin(self) -> None:
         """处理重新认证（刷新Kerberos票据和会话密钥）"""
@@ -862,7 +948,7 @@ class MainWindow(QMainWindow):
                             self._visible_message_ids.add(visible_key)
                         
                         # 添加图片消息到聊天视图
-                        self.chat_view.add_message(
+                        bubble = self.chat_view.add_message(
                             f"[图片] {result.get('file_name')}",
                             "self",
                             "",
@@ -871,6 +957,21 @@ class MainWindow(QMainWindow):
                             self._auth_client.username,
                             timestamp,
                         )
+                        if message_id:
+                            self._bubble_message_ids[bubble] = message_id
+                            self._remember_session_message(
+                                self._view_session_key(session["chat_type"], session["recipient"]),
+                                {
+                                    "id": message_id,
+                                    "sender": self._auth_client.username,
+                                    "recipient": session["recipient"],
+                                    "chat_type": session["chat_type"],
+                                    "timestamp": int(time.time() * 1000),
+                                    "text": f"[图片] {result.get('file_name')}",
+                                    "image_data": result.get("image_base64", ""),
+                                    "file_name": result.get("file_name", ""),
+                                },
+                            )
                     
                     self.chat_view.set_upload_progress(100, "上传完成！")
                     self.chat_view.add_message(f"图片发送成功：{result.get('file_name')}", "system")
