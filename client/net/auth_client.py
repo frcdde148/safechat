@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 # 导入加密模块
+from common.config.settings import load_settings
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.rsa_sign import generate_key_pair
 from common.crypto.sha256 import salted_password_hash, sha256_hex
@@ -77,6 +78,10 @@ class AuthClient:
         # RSA密钥对
         self.private_key_pem, self.public_key_pem = generate_key_pair()
         self.public_key_fingerprint = sha256_hex(self.public_key_pem.encode("utf-8"))
+        performance = load_settings().get("performance", {})
+        self.history_page_size = int(performance.get("history_page_size", 80) or 80)
+        self.history_page_size = max(20, min(self.history_page_size, 300))
+        self.encrypt_images = bool(performance.get("encrypt_images", False))
 
         # 在构造完成后，如果仍未设置 client_addr，尝试通过临时 UDP socket 推断本地出站 IP
         if not self.client_addr:
@@ -575,10 +580,9 @@ class AuthClient:
         if preview_callback:
             preview_callback(output_name, image_base64)
         
-        # 步骤3: DES加密
+        # 步骤3: 根据配置决定是否加密图片正文
         if progress_callback:
-            progress_callback(50, "正在加密数据...")
-        image_cipher = encrypt_text(image_base64, self.session_key_c_v)
+            progress_callback(50, "正在处理图片数据...")
         
         # 步骤4: 构建消息体
         if progress_callback:
@@ -586,13 +590,16 @@ class AuthClient:
         
         body = {
             "ticket_v": self.service_ticket,
-            "image_cipher": image_cipher,       # 加密的图片数据
             "file_name": output_name,           # 输出文件名
             "file_size": len(image_data),       # 压缩后大小
             "original_size": original_size,     # 原始大小
             "chat_type": chat_type,
             "recipient": recipient,
         }
+        if self.encrypt_images:
+            body["image_cipher"] = encrypt_text(image_base64, self.session_key_c_v)
+        else:
+            body["image_data"] = image_base64
         
         # 步骤5: HMAC和RSA签名
         digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
@@ -702,7 +709,12 @@ class AuthClient:
         base_name, _ = os.path.splitext(os.path.basename(file_path))
         return compressed, f"{base_name}_safechat{extension}", len(original_data)
 
-    def poll_chat_messages(self, chat_type: str = "group", recipient: str = "") -> list[dict[str, Any]]:
+    def poll_chat_messages(
+        self,
+        chat_type: str = "group",
+        recipient: str = "",
+        history_mode: str = "incremental",
+    ) -> list[dict[str, Any]]:
         """拉取并解密消息（增量拉取）
         
         参数:
@@ -730,7 +742,10 @@ class AuthClient:
             "last_seen_id": self.last_message_ids.get(session_key, 0),  # 增量拉取
             "chat_type": chat_type,
             "recipient": recipient,
+            "limit": self.history_page_size,
         }
+        if history_mode == "latest" and body["last_seen_id"] <= 0:
+            body["history_mode"] = "latest"
         digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
         message = Message(
             type="CHAT_POLL",
@@ -795,10 +810,15 @@ class AuthClient:
         )
         response = request(self.chat_host, self.chat_port, message, timeout=60.0)
         self._raise_on_error(response)
-        image_cipher = response["body"]["image_cipher"]
+        image_cipher = response["body"].get("image_cipher")
+        image_data = response["body"].get("image_data")
+        if not image_data and image_cipher:
+            image_data = decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], self.session_key_c_v)
+        if not image_data:
+            raise ValueError("服务器未返回图片数据")
         return {
             "message_id": int(response["body"].get("message_id", message_id)),
-            "image_data": decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], self.session_key_c_v),
+            "image_data": image_data,
             "file_name": response["body"].get("file_name", ""),
         }
 

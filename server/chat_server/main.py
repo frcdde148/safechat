@@ -6,7 +6,7 @@ import json
 import threading
 import time
 
-from common.config.settings import server_bind_address, service_address
+from common.config.settings import load_settings, server_bind_address, service_address
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.sha256 import sha256_hex
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model
@@ -25,6 +25,16 @@ online_users: dict[str, dict] = {}  # 在线用户列表 {用户名: {session_id
 pubkey_lock = threading.Lock()  # 公钥绑定线程锁
 session_pubkeys: dict[str, str] = {}  # 用户公钥绑定
 ONLINE_TIMEOUT_MS = 30_000  # 30秒无心跳 → 离线
+PERFORMANCE_SETTINGS = load_settings().get("performance", {})
+
+
+def _history_page_size(default: int = 80) -> int:
+    value = int(PERFORMANCE_SETTINGS.get("history_page_size", default) or default)
+    return max(20, min(value, 300))
+
+
+def _encrypt_images_enabled() -> bool:
+    return bool(PERFORMANCE_SETTINGS.get("encrypt_images", False))
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> Message:
@@ -253,11 +263,17 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
             dao.add_audit_log("", ticket.client_id, address[0], "IMAGE_SEND_MUTED", content_enc=mute_error)
             return Message(type="ERROR", seq=message["seq"], body={"error": mute_error})
         
-        image_cipher = message["body"]["image_cipher"]
+        image_cipher = message["body"].get("image_cipher")
+        image_plain = message["body"].get("image_data")
         file_name = message["body"]["file_name"]
         file_size = message["body"]["file_size"]
-        
-        plaintext = decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], ticket.session_key)
+
+        if image_plain:
+            plaintext = str(image_plain)
+        elif image_cipher:
+            plaintext = decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], ticket.session_key)
+        else:
+            return Message(type="ERROR", seq=message["seq"], body={"error": "图片数据不能为空"})
         
         chat_type = message["body"].get("chat_type", "group")
         recipient = message["body"].get("recipient", "")
@@ -370,7 +386,10 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
     recipient = message["body"].get("recipient", "")
     session_key = _session_key(ticket.client_id, chat_type, recipient)
     
-    pending = dao.list_chat_messages(session_key, last_seen_id, ticket.client_id)
+    limit = int(message["body"].get("limit", _history_page_size()) or _history_page_size())
+    limit = max(1, min(limit, 300))
+    latest = str(message["body"].get("history_mode", "")).lower() == "latest" and last_seen_id <= 0
+    pending = dao.list_chat_messages(session_key, last_seen_id, ticket.client_id, limit=limit, latest=latest)
     
     encrypted_messages = []
     for item in pending:
@@ -390,13 +409,16 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
             msg_data["file_name"] = item.get("file_name", "")
         encrypted_messages.append(msg_data)
     
-    dao.add_audit_log("", ticket.client_id, address[0], "CHAT_POLL", content_enc=str(last_seen_id))
+    if encrypted_messages:
+        dao.add_audit_log("", ticket.client_id, address[0], "CHAT_POLL", content_enc=str(last_seen_id))
     return Message(
         type="CHAT_RECV",
         seq=message["seq"],
         body={
             "messages": encrypted_messages,
             "room": session_key,
+            "limit": limit,
+            "history_mode": "latest" if latest else "incremental",
         },
     )
 
@@ -412,7 +434,6 @@ def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
         dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST_SIGN_FAILED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "USER_LIST 签名验证失败"})
     users = _current_contact_users()
-    dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST", content_enc=str(len(users)))
     return Message(
         type="USER_LIST",
         seq=message["seq"],
@@ -455,8 +476,12 @@ def _handle_image_fetch(message: dict, address: tuple[str, int]) -> Message:
         seq=message["seq"],
         body={
             "message_id": message_id,
-            "image_cipher": encrypt_text(item["image_data"], ticket.session_key),
             "file_name": item.get("file_name", ""),
+            **(
+                {"image_cipher": encrypt_text(item["image_data"], ticket.session_key)}
+                if _encrypt_images_enabled()
+                else {"image_data": item["image_data"]}
+            ),
         },
     )
 

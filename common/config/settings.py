@@ -50,6 +50,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "audit_content_cipher": "des",
         "admin_token_secret": "safechat-admin-token-secret",
     },
+    "performance": {
+        "history_page_size": 80,
+        "encrypt_images": False,
+    },
 }
 
 

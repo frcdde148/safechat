@@ -49,6 +49,7 @@ class MainWindow(QMainWindow):
         self._visible_message_ids: set[tuple[str, int]] = set()  # 已显示的消息ID
         self._user_refresh_thread: QThread | None = None  # 在线用户刷新线程
         self._last_user_refresh_at = 0.0              # 在线用户最近刷新时间
+        self._last_user_refresh_error_at = 0.0        # 在线用户刷新错误提示时间
         self._is_relogin = False                  # 是否正在重新认证
 
         # 定时器
@@ -406,8 +407,15 @@ class MainWindow(QMainWindow):
                 self._mark_reauth_required(str(exc))
                 self._poll_timer.stop()
                 return
+            message = str(exc)
+            if "timed out" in message.lower() or "超时" in message:
+                self.chat_view.security_status.set_value("用户列表刷新超时", "warnBadge")
+                return
+            now = time.monotonic()
             self.chat_view.security_status.set_value("用户列表异常", "errorBadge")
-            self.chat_view.add_message(f"安全提示：刷新在线用户失败，{exc}", "security")
+            if now - self._last_user_refresh_error_at > 30:
+                self._last_user_refresh_error_at = now
+                self.chat_view.add_message(f"安全提示：刷新在线用户失败，{exc}", "security")
 
         def cleanup() -> None:
             if self._user_refresh_thread is thread:
@@ -451,7 +459,11 @@ class MainWindow(QMainWindow):
 
             def run(self) -> None:
                 try:
-                    messages = self.auth_client.poll_chat_messages(self.chat_type, self.recipient)
+                    messages = self.auth_client.poll_chat_messages(
+                        self.chat_type,
+                        self.recipient,
+                        history_mode="latest",
+                    )
                     self.result_ready.emit(self.chat_type, self.recipient, messages)
                 except Exception as exc:
                     self.error.emit(self.chat_type, self.recipient, exc)
