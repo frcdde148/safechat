@@ -42,4 +42,8 @@ def _handle_client(sock: socket.socket, address: tuple[str, int], handler: Handl
                 seq=0,
                 body={"error": str(exc)},
             )
-        send_message(sock, response)
+        try:
+            send_message(sock, response)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError) as e:
+            # 客户端在响应发送前已断开，记录并安全返回，不让线程抛出未捕获异常
+            print(f"[warning] 发送响应失败，连接已断开: {e}")
