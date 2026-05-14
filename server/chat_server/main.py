@@ -24,8 +24,11 @@ online_lock = threading.Lock()  # 在线用户列表线程锁（多用户同时�
 online_users: dict[str, dict] = {}  # 在线用户列表 {用户名: {session_id, client_ip, last_seen, status}}
 pubkey_lock = threading.Lock()  # 公钥绑定线程锁
 session_pubkeys: dict[str, str] = {}  # 用户公钥绑定
+user_list_cache_lock = threading.Lock()
+user_list_cache: dict[str, object] = {"expires_at": 0.0, "users": []}
 ONLINE_TIMEOUT_MS = 30_000  # 30秒无心跳 → 离线
 PERFORMANCE_SETTINGS = load_settings().get("performance", {})
+USER_LIST_CACHE_SECONDS = 1.0
 
 
 def _history_page_size(default: int = 80) -> int:
@@ -409,8 +412,6 @@ def _handle_chat_poll(message: dict, address: tuple[str, int]) -> Message:
             msg_data["file_name"] = item.get("file_name", "")
         encrypted_messages.append(msg_data)
     
-    if encrypted_messages:
-        dao.add_audit_log("", ticket.client_id, address[0], "CHAT_POLL", content_enc=str(last_seen_id))
     return Message(
         type="CHAT_RECV",
         seq=message["seq"],
@@ -433,7 +434,7 @@ def _handle_user_list(message: dict, address: tuple[str, int]) -> Message:
     if not _verify_signed_message_for_ticket(message, ticket):
         dao.add_audit_log("", ticket.client_id, address[0], "USER_LIST_SIGN_FAILED")
         return Message(type="ERROR", seq=message["seq"], body={"error": "USER_LIST 签名验证失败"})
-    users = _current_contact_users()
+    users = _current_contact_users_cached()
     return Message(
         type="USER_LIST",
         seq=message["seq"],
@@ -470,7 +471,6 @@ def _handle_image_fetch(message: dict, address: tuple[str, int]) -> Message:
     if not item.get("image_data"):
         return Message(type="ERROR", seq=message["seq"], body={"error": "该消息不包含图片"})
 
-    dao.add_audit_log("", ticket.client_id, address[0], "IMAGE_FETCH", content_enc=str(message_id))
     return Message(
         type="CHAT_RECV",
         seq=message["seq"],
@@ -517,6 +517,7 @@ def _handle_admin_mute_user(message: dict, address: tuple[str, int]) -> Message:
         reason=reason,
     )
     payload = {"target": target, "expires_at": expires_at, "reason": reason, "rule_id": rule_id}
+    _invalidate_user_list_cache()
     dao.add_audit_log(
         "",
         ticket.client_id,
@@ -551,6 +552,7 @@ def _handle_admin_unmute_user(message: dict, address: tuple[str, int]) -> Messag
     if not target:
         return Message(type="ERROR", seq=message["seq"], body={"error": "目标用户名不能为空"})
     affected = dao.revoke_mute_rule("user", target)
+    _invalidate_user_list_cache()
     payload = {"target": target, "affected": affected}
     dao.add_audit_log(
         "",
@@ -590,6 +592,7 @@ def _handle_admin_kick_user(message: dict, address: tuple[str, int]) -> Message:
     with online_lock:
         existed = target in online_users
         online_users.pop(target, None)
+    _invalidate_user_list_cache()
     dao.add_session_revocation(target, ticket.client_id, "管理员撤销会话")
     dao.add_audit_log(
         "",
@@ -640,7 +643,6 @@ def _handle_chat_admin_list_messages(message: dict, address: tuple[str, int]) ->
     with dao._connect() as conn:
         rows = conn.execute(query, params).fetchall()
         messages = [dict(row) for row in rows]
-    dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_LIST_MESSAGES", content_enc=str(len(messages)))
     return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"messages": messages})
 
 
@@ -692,6 +694,7 @@ def _handle_chat_admin_set_role(message: dict, address: tuple[str, int]) -> Mess
             (target, role, now),
         )
         conn.commit()
+    _invalidate_user_list_cache()
     dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_SET_ROLE", content_enc=json.dumps({"target": target, "role": role}, ensure_ascii=False))
     return Message(type="CHAT_ADMIN_ACK", seq=message["seq"], body={"updated": target, "role": role})
 
@@ -710,6 +713,7 @@ def _handle_chat_admin_delete_user(message: dict, address: tuple[str, int]) -> M
         return Message(type="ERROR", seq=message["seq"], body={"error": "目标用户名不能为空"})
     with online_lock:
         online_users.pop(target, None)
+    _invalidate_user_list_cache()
     dao.add_session_revocation(target, ticket.client_id, "用户已被管理员删除")
     deleted = dao.delete_user(target)
     dao.add_audit_log("", ticket.client_id, address[0], "CHAT_ADMIN_DELETE_USER", content_enc=json.dumps({"target": target, "deleted": deleted}, ensure_ascii=False))
@@ -734,6 +738,7 @@ def _revoked_session_error(message: dict, ticket, address: tuple[str, int]) -> M
         return None
     with online_lock:
         online_users.pop(ticket.client_id, None)
+    _invalidate_user_list_cache()
     reason = revocation.get("reason") or "会话已被管理员撤销"
     dao.add_audit_log(
         "",
@@ -785,6 +790,7 @@ def _mark_user_online(username: str, session_id: str, client_ip: str) -> None:
             "last_seen": int(time.time() * 1000),
             "status": "online",
         }
+    _invalidate_user_list_cache()
 
 
 def _update_user_last_seen(username: str, client_ip: str = "") -> None:
@@ -802,6 +808,7 @@ def _update_user_last_seen(username: str, client_ip: str = "") -> None:
                 "last_seen": int(time.time() * 1000),
                 "status": "online",
             }
+            _invalidate_user_list_cache()
 
 
 def _current_online_users() -> list[dict]:
@@ -814,7 +821,30 @@ def _current_online_users() -> list[dict]:
         ]
         for username in expired:
             del online_users[username]
+        if expired:
+            _invalidate_user_list_cache()
         return sorted(online_users.values(), key=lambda item: item["username"])
+
+
+def _invalidate_user_list_cache() -> None:
+    """清空 USER_LIST 短缓存。"""
+    with user_list_cache_lock:
+        user_list_cache["expires_at"] = 0.0
+        user_list_cache["users"] = []
+
+
+def _current_contact_users_cached() -> list[dict]:
+    """返回带 1 秒短缓存的联系人列表。"""
+    now = time.monotonic()
+    with user_list_cache_lock:
+        if now < float(user_list_cache.get("expires_at", 0.0)):
+            return [dict(item) for item in user_list_cache.get("users", [])]
+
+    users = _current_contact_users()
+    with user_list_cache_lock:
+        user_list_cache["users"] = [dict(item) for item in users]
+        user_list_cache["expires_at"] = time.monotonic() + USER_LIST_CACHE_SECONDS
+    return users
 
 
 def _current_contact_users() -> list[dict]:
