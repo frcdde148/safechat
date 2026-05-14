@@ -449,11 +449,24 @@ class SQLiteDAO:
             conn.commit()
             return int(cursor.lastrowid)
 
-    def list_chat_messages(self, session_key: str, after_id: int, username: str) -> list[dict[str, Any]]:
+    def list_chat_messages(
+        self,
+        session_key: str,
+        after_id: int,
+        username: str,
+        limit: int | None = None,
+        latest: bool = False,
+    ) -> list[dict[str, Any]]:
         """按会话列出用户有权限读取的历史消息。"""
+        limit_clause = ""
+        params: list[Any] = [session_key, after_id, username, username]
+        if limit and limit > 0:
+            limit_clause = "LIMIT ?"
+            params.append(int(limit))
+        order = "DESC" if latest else "ASC"
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM chat_messages
                 WHERE session_key = ?
                   AND id > ?
@@ -462,11 +475,13 @@ class SQLiteDAO:
                     OR sender = ?
                     OR recipient = ?
                   )
-                ORDER BY id ASC
+                ORDER BY id {order}
+                {limit_clause}
                 """,
-                (session_key, after_id, username, username),
+                tuple(params),
             ).fetchall()
-            return [dict(row) for row in rows]
+            messages = [dict(row) for row in rows]
+            return list(reversed(messages)) if latest else messages
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
