@@ -64,7 +64,14 @@ python tests\perf_smoke.py
 - 空轮询平均耗时。
 - `USER_LIST` 短缓存平均耗时。
 - 控制台查询最近消息。
-- 图片发送和 `IMAGE_FETCH` 拉取图片。
+- 图片发送和 `IMAGE_FETCH` 拉取图片，默认覆盖小图、中图、较大图三档，并输出平均值和 P95。
+
+如需更重的图片性能测试，可开启深度模式：
+
+```powershell
+$env:SAFECHAT_IMAGE_PERF_DEEP="1"
+python tests\perf_smoke.py
+```
 
 该测试会输出耗时，并使用宽松阈值检查明显性能回退。
 

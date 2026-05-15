@@ -134,21 +134,56 @@ def _measure_scenarios(label: str, ports: dict[str, int], tmp_path: Path) -> lis
     _, user_list_ms = _average_time(lambda: bob.fetch_online_users(), count=20)
     _, admin_list_ms = _timed(lambda: admin.chat_admin_list_messages(limit=80))
 
-    image_path = tmp_path / "perf.png"
-    _write_test_png(image_path, repeat=128)
-    image_result, image_send_ms = _timed(lambda: alice.send_image(str(image_path)))
-    image_id = int(image_result["message_id"])
-    _, image_fetch_ms = _timed(lambda: bob.fetch_message_image(image_id))
+    image_results = _measure_image_scenarios(label, alice, bob, tmp_path)
 
-    return [
+    results = [
         (f"{label} 写入 {seed_count} 条文本", seed_ms),
         (f"{label} 最近历史页", history_ms),
         (f"{label} 空轮询平均", empty_poll_ms),
         (f"{label} USER_LIST 缓存平均", user_list_ms),
         (f"{label} 控制台查 80 条", admin_list_ms),
-        (f"{label} 发送图片", image_send_ms),
-        (f"{label} 拉取图片", image_fetch_ms),
     ]
+    results.extend(image_results)
+    return results
+
+
+def _measure_image_scenarios(label: str, sender, receiver, tmp_path: Path) -> list[tuple[str, float]]:
+    if os.environ.get("SAFECHAT_IMAGE_PERF_DEEP") == "1":
+        image_specs = [
+            ("小图", 320, 240, 4),
+            ("中图", 800, 600, 3),
+            ("大图", 1280, 960, 2),
+        ]
+    else:
+        image_specs = [
+            ("小图", 120, 90, 3),
+            ("中图", 320, 240, 2),
+            ("较大图", 480, 360, 1),
+        ]
+    results: list[tuple[str, float]] = []
+    for name, width, height, rounds in image_specs:
+        image_path = tmp_path / f"perf_{width}x{height}.jpg"
+        _write_test_image(image_path, width, height)
+
+        send_times: list[float] = []
+        fetch_times: list[float] = []
+        for _ in range(rounds):
+            image_result, send_ms = _timed(lambda: sender.send_image(str(image_path)))
+            image_id = int(image_result["message_id"])
+            _, fetch_ms = _timed(lambda: receiver.fetch_message_image(image_id))
+            send_times.append(send_ms)
+            fetch_times.append(fetch_ms)
+
+        file_kb = image_path.stat().st_size / 1024
+        results.extend(
+            [
+                (f"{label} {name}({file_kb:.0f}KB) 发送平均", statistics.mean(send_times)),
+                (f"{label} {name}({file_kb:.0f}KB) 发送P95", _p95(send_times)),
+                (f"{label} {name}({file_kb:.0f}KB) 拉取平均", statistics.mean(fetch_times)),
+                (f"{label} {name}({file_kb:.0f}KB) 拉取P95", _p95(fetch_times)),
+            ]
+        )
+    return results
 
 
 def _timed(fn: Callable[[], T]) -> tuple[T, float]:
@@ -164,6 +199,14 @@ def _average_time(fn: Callable[[], T], count: int) -> tuple[T, float]:
         last_value, elapsed = _timed(fn)
         values.append(elapsed)
     return last_value, statistics.mean(values)
+
+
+def _p95(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    if len(values) < 20:
+        return max(values)
+    return statistics.quantiles(values, n=20, method="inclusive")[18]
 
 
 def _elapsed_ms(start: float) -> float:
@@ -199,6 +242,17 @@ def _write_test_png(path: Path, repeat: int) -> None:
     )
     data = base64.b64decode(png_b64)
     path.write_bytes(data * max(1, repeat))
+
+
+def _write_test_image(path: Path, width: int, height: int) -> None:
+    try:
+        from PIL import Image
+    except ImportError:
+        _write_test_png(path, repeat=max(1, width * height // 1024))
+        return
+
+    image = Image.effect_noise((width, height), 80).convert("RGB")
+    image.save(path, format="JPEG", quality=90, optimize=True)
 
 
 def _allocate_ports(count: int) -> dict[str, int]:
