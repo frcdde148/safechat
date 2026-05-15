@@ -94,7 +94,22 @@ ChatServer 对联系人列表使用 1 秒短缓存，并减少 `CHAT_POLL`、`IM
 }
 ```
 
-### 3.2 密码长期密钥
+### 3.2 AES-GCM 图片字段
+
+图片和文件正文属于大字段，不再使用纯 Python DES 加密 Base64 文本。当前版本图片正文固定按 bytes 使用 AES-256-GCM 加密：
+
+```json
+{
+  "alg": "AES-256-GCM",
+  "nonce": "Base64随机数",
+  "ciphertext": "Base64密文",
+  "tag": "Base64认证标签"
+}
+```
+
+密钥派生：`AES_key = SHA256(secret)[:32]`。
+
+### 3.3 密码长期密钥
 
 用户长期密钥 `Kc` 不在网络上传输。客户端和 AS 使用同一规则计算：
 
@@ -428,16 +443,15 @@ ChatServer 处理：
 2. 如果安装 PIL，则自动旋转、缩放到最大 `1280x1280`。
 3. 透明图片保存为 PNG；非透明图片保存为 JPEG，质量 75。
 4. 压缩后最大允许 10 MB。
-5. 将图片二进制 Base64 编码。
-6. 如果 `performance.encrypt_images=true`，使用 `Kc,v` 加密 Base64 字符串；否则直接发送 Base64 字符串。
+5. 为预览生成图片 Base64。
+6. 使用 `Kc,v` 对图片 bytes 做 AES-GCM 加密。
 
 `body` 字段：
 
 | 字段 | 说明 |
 | --- | --- |
 | `ticket_v` | Service Ticket。 |
-| `image_cipher` | 可选。`encrypt_images=true` 时使用 `Kc,v` 加密的图片 Base64 字符串。 |
-| `image_data` | 可选。`encrypt_images=false` 时的图片 Base64 字符串。 |
+| `image_cipher` | 必填。使用 `Kc,v` 加密的 AES-GCM 图片密文。 |
 | `file_name` | 处理后的文件名。 |
 | `file_size` | 压缩后大小，字节。 |
 | `original_size` | 原始文件大小，字节。 |
@@ -446,12 +460,11 @@ ChatServer 处理：
 
 加密与签名：
 
-- `encrypt_images=true`：`image_cipher = DES-CBC_Kc,v(base64(image_bytes))`。
-- `encrypt_images=false`：`image_data = base64(image_bytes)`，图片正文不做 DES 加密。
+- `image_cipher = AES-GCM_Kc,v(image_bytes)`。
 - `hmac = HMAC-SHA256(Kc,v, canonical_json(body))`。
 - `sig = RSA_sign_client_private(hmac)`。
 
-ChatServer 根据请求字段解析图片正文，把 Base64 图片数据写入 `chat_messages.image_data`，并把消息文本保存为 `[图片] file_name`。
+ChatServer 根据请求字段解析图片正文。开启图片加密时，服务端用服务端图片密钥再次 AES-GCM 加密后写入 `chat_messages.image_data`；关闭图片加密时保存 Base64 图片数据。消息文本保存为 `[图片] file_name`。
 
 ### 5.4 CHAT_POLL：Client -> ChatServer
 
@@ -544,19 +557,16 @@ ChatServer 行为：
 | 字段 | 说明 |
 | --- | --- |
 | `message_id` | 图片消息 ID。 |
-| `image_cipher` | 可选。`encrypt_images=true` 时使用当前请求者 `Kc,v` 加密的图片 Base64 字符串。 |
-| `image_data` | 可选。`encrypt_images=false` 时返回图片 Base64 字符串。 |
+| `image_cipher` | 使用当前请求者 `Kc,v` 加密的 AES-GCM 图片密文。 |
 | `file_name` | 图片文件名。 |
 
 加密情况：
 
-- `encrypt_images=true`：`image_cipher = DES-CBC_当前请求者Kc,v(image_base64)`。
-- `encrypt_images=false`：返回 `image_data`，不额外加密图片正文。
+- `image_cipher = AES-GCM_当前请求者Kc,v(image_bytes)`。
 
 客户端行为：
 
-- 图片不加密时，可自动拉取图片正文并生成缩略图。
-- 图片加密时，历史图片默认只显示占位，点击图片时才拉取并解密，避免切换会话时批量解密。
+- 历史图片默认只显示占位，点击图片时才拉取并解密，避免切换会话时批量解密。
 
 ### 5.7 USER_LIST：Client -> ChatServer
 
@@ -767,8 +777,7 @@ ChatServer 管理接口使用 Service Ticket 和客户端签名，不使用 `adm
 
 ### 10.2 图片加载策略
 
-- `encrypt_images=false`：图片传输和拉取更快，客户端可自动生成缩略图。
-- `encrypt_images=true`：图片正文加密，但历史图片默认按需点击加载，避免切换会话时批量解密。
+- 图片正文使用 AES-GCM 加密，历史图片默认按需点击加载，避免切换会话时批量传输。
 
 ### 10.3 ChatServer 高频请求优化
 
@@ -792,10 +801,10 @@ sequenceDiagram
     C->>V: C_V_REQ(Service Ticket, E_Kc,v[Authenticator], public_key_pem)
     V-->>C: V_C_REP(E_Kc,v[ts_5 + 1], offline_messages)
     C->>V: CHAT_SEND(E_Kc,v[文本], hmac, sig)
-    C->>V: IMAGE_SEND(image_data 或 E_Kc,v[图片Base64], hmac, sig)
+    C->>V: IMAGE_SEND(image_data 或 AES-GCM_Kc,v[图片bytes], hmac, sig)
     V-->>C: CHAT_ACK(E_Kc,v[确认文本])
     C->>V: CHAT_POLL(ticket_v, last_seen_id, history_mode, hmac, sig)
     V-->>C: CHAT_RECV(E_Kc,v[消息文本], has_image可选)
     C->>V: IMAGE_FETCH(ticket_v, message_id, hmac, sig)
-    V-->>C: CHAT_RECV(image_data 或 E_Kc,v[图片Base64])
+    V-->>C: CHAT_RECV(image_data 或 AES-GCM_Kc,v[图片bytes])
 ```

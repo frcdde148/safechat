@@ -40,6 +40,6 @@
   },
   "performance": {
     "history_page_size": 80,
-    "encrypt_images": false
+    "encrypt_images": true
   }
 }

@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self._session_load_threads: list[QThread] = []  # 会话切换加载线程列表
         self._session_load_generation = 0             # 会话加载版本号（忽略过期结果）
         self._session_message_cache: OrderedDict[str, list[dict]] = OrderedDict()  # 会话消息缓存
-        self._image_data_cache: OrderedDict[int, tuple[str, str]] = OrderedDict()  # 已解密图片缓存
+        self._image_data_cache: OrderedDict[int, tuple[str, str, str]] = OrderedDict()  # 已解密图片缓存
         self._visible_message_ids: set[tuple[str, int]] = set()  # 已显示的消息ID
         self._bubble_message_ids: dict[object, int] = {}    # 图片气泡到消息ID的映射
         self._user_refresh_thread: QThread | None = None  # 在线用户刷新线程
@@ -596,9 +596,10 @@ class MainWindow(QMainWindow):
                 image_data = message.get("image_data", "")
                 file_name = message.get("file_name", "")
                 if not image_data and message_id in self._image_data_cache:
-                    image_data, cached_name = self._image_data_cache[message_id]
+                    image_data, cached_name, cached_cipher = self._image_data_cache[message_id]
                     self._image_data_cache.move_to_end(message_id)
                     file_name = file_name or cached_name
+                    ciphertext = ciphertext or cached_cipher
                 has_image = bool(message.get("has_image") or image_data or file_name)
                 username = message.get("sender") or self._auth_client.username
                 
@@ -633,8 +634,9 @@ class MainWindow(QMainWindow):
         if not self._auth_client:
             return
         if message_id in self._image_data_cache:
-            image_data, cached_name = self._image_data_cache[message_id]
-            self.chat_view.set_message_image(bubble, image_data, cached_name or file_name)
+            image_data, cached_name, cached_cipher = self._image_data_cache[message_id]
+            self._image_data_cache.move_to_end(message_id)
+            self.chat_view.set_message_image(bubble, image_data, cached_name or file_name, cached_cipher)
             if open_after_load:
                 bubble._show_full_image()
             return
@@ -642,7 +644,7 @@ class MainWindow(QMainWindow):
             return
 
         class ImageFetchThread(QThread):
-            result_ready = pyqtSignal(int, str, str)
+            result_ready = pyqtSignal(int, str, str, str)
             error = pyqtSignal(int, Exception)
 
             def __init__(self, auth_client: AuthClient, message_id: int) -> None:
@@ -653,17 +655,22 @@ class MainWindow(QMainWindow):
             def run(self) -> None:
                 try:
                     result = self.auth_client.fetch_message_image(self.message_id)
-                    self.result_ready.emit(self.message_id, result["image_data"], result.get("file_name", ""))
+                    self.result_ready.emit(
+                        self.message_id,
+                        result["image_data"],
+                        result.get("file_name", ""),
+                        str(result.get("image_cipher", "")),
+                    )
                 except Exception as exc:
                     self.error.emit(self.message_id, exc)
 
         self._image_fetch_inflight.add(message_id)
         thread = ImageFetchThread(self._auth_client, message_id)
 
-        def on_finished(done_id: int, image_data: str, done_file_name: str) -> None:
+        def on_finished(done_id: int, image_data: str, done_file_name: str, image_cipher: str) -> None:
             display_name = done_file_name or file_name
-            self._remember_image_data(done_id, image_data, display_name)
-            self.chat_view.set_message_image(bubble, image_data, display_name)
+            self._remember_image_data(done_id, image_data, display_name, image_cipher)
+            self.chat_view.set_message_image(bubble, image_data, display_name, image_cipher)
             if open_after_load and bubble in self.chat_view.message_bubbles:
                 bubble._show_full_image()
 
@@ -693,9 +700,9 @@ class MainWindow(QMainWindow):
         self.chat_view.security_status.set_value("正在加载图片", "warnBadge")
         self._fetch_message_image_async(message_id, bubble, getattr(bubble, "file_name", ""), open_after_load=True)
 
-    def _remember_image_data(self, message_id: int, image_data: str, file_name: str) -> None:
+    def _remember_image_data(self, message_id: int, image_data: str, file_name: str, image_cipher: str = "") -> None:
         """缓存已解密图片正文，限制内存占用。"""
-        self._image_data_cache[message_id] = (image_data, file_name)
+        self._image_data_cache[message_id] = (image_data, file_name, image_cipher)
         self._image_data_cache.move_to_end(message_id)
         while len(self._image_data_cache) > 60:
             self._image_data_cache.popitem(last=False)
@@ -954,6 +961,7 @@ class MainWindow(QMainWindow):
                     ):
                         from datetime import datetime
                         timestamp = datetime.now().strftime("%H:%M:%S")
+                        image_cipher = str(result.get("image_cipher", ""))
                         if message_id:
                             self._visible_message_ids.add(visible_key)
                         
@@ -961,7 +969,7 @@ class MainWindow(QMainWindow):
                         bubble = self.chat_view.add_message(
                             f"[图片] {result.get('file_name')}",
                             "self",
-                            "",
+                            image_cipher,
                             result.get("image_base64", ""),
                             result.get("file_name", ""),
                             self._auth_client.username,
@@ -978,9 +986,16 @@ class MainWindow(QMainWindow):
                                     "chat_type": session["chat_type"],
                                     "timestamp": int(time.time() * 1000),
                                     "text": f"[图片] {result.get('file_name')}",
+                                    "ciphertext": image_cipher,
                                     "image_data": result.get("image_base64", ""),
                                     "file_name": result.get("file_name", ""),
                                 },
+                            )
+                            self._remember_image_data(
+                                message_id,
+                                result.get("image_base64", ""),
+                                result.get("file_name", ""),
+                                image_cipher,
                             )
                     
                     self.chat_view.set_upload_progress(100, "上传完成！")

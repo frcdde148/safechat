@@ -57,8 +57,7 @@ python -m database.init_db --role all
 ```
 
 - `history_page_size`：首次进入某个会话时拉取的最近历史条数。客户端会缓存每个会话最近 N 条消息，切换回来时先显示缓存，再后台拉增量。
-- `encrypt_images=false`：图片正文不做 DES 加密，仍经过 Kerberos 认证、Service Ticket、HMAC、RSA 签名和权限校验，体验更流畅。
-- `encrypt_images=true`：图片正文使用 `Kc,v` 加密。为避免切换会话卡顿，客户端只显示图片占位，点击图片时才通过 `IMAGE_FETCH` 拉取并解密。
+- 当前版本图片正文固定使用 AES-GCM 和 `Kc,v` 加密；旧版明文图片协议已移除。为避免切换会话卡顿，客户端只显示图片占位，点击图片时才通过 `IMAGE_FETCH` 拉取并解密。
 
 ## 联机测试
 
@@ -105,8 +104,8 @@ python tests\perf_smoke.py
 - 客户端 RSA 公钥只在 `C_V_REQ` 发给 ChatServer；AS 不保存客户端公钥。
 - `C_V_REQ` 的 Authenticator 包含客户端公钥摘要，ChatServer 会校验该摘要与 `public_key_pem` 一致。
 - ChatServer 将公钥绑定到当前 `username + Kc,v` 会话，后续 `CHAT_SEND`、`IMAGE_SEND`、`CHAT_POLL`、`USER_LIST` 和 ChatServer 管理请求都用真实 HMAC 与该绑定公钥验签。
-- 聊天文本使用 `Kc,v` 加密传输；图片正文是否加密由 `performance.encrypt_images` 控制。
-- 聊天列表先返回图片占位，图片正文通过签名的 `IMAGE_FETCH` 单独拉取；图片不加密时返回 Base64，图片加密时返回 `image_cipher`。
+- 聊天文本使用 `Kc,v` 加密传输；图片正文固定使用 AES-GCM 加密。
+- 聊天列表先返回图片占位，图片正文通过签名的 `IMAGE_FETCH` 单独拉取并返回 `image_cipher`。
 - 客户端按会话缓存最近消息，切换会话时先显示缓存，再后台拉增量。首次进入会话时只拉最近 `history_page_size` 条。
 - 图片消息在客户端显示占位或缩略图，缩略图由后台线程解码和缩放。开启图片加密时，历史图片默认按需点击加载，避免批量解密导致卡顿。
 - 离线私聊会同时写入聊天历史和离线队列，发送者切换页面后仍可看到，接收者登录后可拉取。
@@ -118,6 +117,6 @@ python tests\perf_smoke.py
 
 - 本项目是课程演示系统，不是生产级安全通信系统。
 - DES 和 RSA-1024 用于展示课程机制，不建议用于真实生产环境。
-- ChatServer 数据库保存聊天文本和图片 Base64 明文，返回客户端时再按当前会话加密文本或按配置处理图片。
-- 图片加密采用字符串级 DES，对大图片性能较差；验收演示可根据需要切换 `encrypt_images`。
+- ChatServer 数据库保存聊天文本；图片只保存服务端 AES-GCM 密文。
+- DES 和 RSA-1024 用于课程机制演示；图片大字段已改用 PyCryptodome AES-GCM，以避免纯 Python DES 处理大图片造成明显卡顿。
 - 客户端会话缓存是进程内缓存，客户端重启后会重新加载最近历史页。

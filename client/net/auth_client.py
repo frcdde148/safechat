@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 # 导入加密模块
+from common.crypto.blob import decrypt_blob, encrypt_blob
 from common.config.settings import load_settings
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.rsa_sign import generate_key_pair
@@ -81,7 +82,8 @@ class AuthClient:
         performance = load_settings().get("performance", {})
         self.history_page_size = int(performance.get("history_page_size", 80) or 80)
         self.history_page_size = max(20, min(self.history_page_size, 300))
-        self.encrypt_images = bool(performance.get("encrypt_images", False))
+        # 当前版本图片正文固定使用 AES-GCM 加密，不再保留明文图片协议。
+        self.encrypt_images = True
 
         # 在构造完成后，如果仍未设置 client_addr，尝试通过临时 UDP socket 推断本地出站 IP
         if not self.client_addr:
@@ -596,10 +598,7 @@ class AuthClient:
             "chat_type": chat_type,
             "recipient": recipient,
         }
-        if self.encrypt_images:
-            body["image_cipher"] = encrypt_text(image_base64, self.session_key_c_v)
-        else:
-            body["image_data"] = image_base64
+        body["image_cipher"] = encrypt_blob(image_data, self.session_key_c_v)
         
         # 步骤5: HMAC和RSA签名
         digest, signature = sign_body(body, self.private_key_pem, self.session_key_c_v)
@@ -638,6 +637,7 @@ class AuthClient:
             "success": True,
             "file_name": output_name,
             "image_base64": image_base64,
+            "image_cipher": body["image_cipher"],
             "message_id": message_id,
             "ack": plaintext_ack,
         }
@@ -811,14 +811,17 @@ class AuthClient:
         response = request(self.chat_host, self.chat_port, message, timeout=60.0)
         self._raise_on_error(response)
         image_cipher = response["body"].get("image_cipher")
-        image_data = response["body"].get("image_data")
-        if not image_data and image_cipher:
-            image_data = decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], self.session_key_c_v)
+        if not image_cipher or image_cipher.get("alg") != "AES-256-GCM":
+            raise ValueError("服务器未返回 AES-GCM 图片密文")
+        from base64 import b64encode
+
+        image_data = b64encode(decrypt_blob(image_cipher, self.session_key_c_v)).decode("ascii")
         if not image_data:
             raise ValueError("服务器未返回图片数据")
         return {
             "message_id": int(response["body"].get("message_id", message_id)),
             "image_data": image_data,
+            "image_cipher": image_cipher,
             "file_name": response["body"].get("file_name", ""),
         }
 

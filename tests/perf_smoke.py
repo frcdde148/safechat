@@ -29,8 +29,7 @@ T = TypeVar("T")
 
 def main() -> int:
     results = []
-    results.extend(_run_perf_case("图片不加密", encrypt_images=False))
-    results.extend(_run_perf_case("图片加密", encrypt_images=True))
+    results.extend(_run_perf_case("图片AES-GCM加密", encrypt_images=True))
 
     print("\n性能结果：")
     for name, elapsed_ms in results:
