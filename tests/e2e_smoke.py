@@ -112,6 +112,7 @@ def _run_scenarios(ports: dict[str, int], tmp_path: Path) -> None:
 
     from client.net.auth_client import AuthClient
     from common.protocol.message import Message
+    from common.protocol.security import sign_body
     from common.protocol.socket_io import request
 
     alice = _login(AuthClient, "alice", "alice123", ports)
@@ -133,6 +134,24 @@ def _run_scenarios(ports: dict[str, int], tmp_path: Path) -> None:
     assert any(m["id"] == image_id and m.get("has_image") for m in image_messages), "bob 未收到图片占位消息"
     image_payload = bob.fetch_message_image(image_id)
     assert image_payload["image_data"], "IMAGE_FETCH 未返回图片数据"
+
+    plaintext_body = {
+        "ticket_v": alice.service_ticket,
+        "image_data": image_payload["image_data"],
+        "file_name": "old_plaintext.png",
+        "file_size": 1,
+        "original_size": 1,
+        "chat_type": "group",
+        "recipient": "",
+    }
+    digest, signature = sign_body(plaintext_body, alice.private_key_pem, alice.session_key_c_v)
+    plaintext_response = request(
+        "127.0.0.1",
+        ports["chat"],
+        Message(type="IMAGE_SEND", seq=0, body=plaintext_body, hmac=digest, sig=signature),
+        timeout=5.0,
+    )
+    assert plaintext_response["type"] == "ERROR" and "AES-GCM" in plaintext_response["body"].get("error", ""), "ChatServer 仍接受旧版明文图片请求"
 
     offline_text = f"e2e 离线私聊 {int(time.time())}"
     alice.send_chat_message(offline_text, chat_type="private", recipient="carol")

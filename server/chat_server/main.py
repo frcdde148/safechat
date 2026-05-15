@@ -7,6 +7,7 @@ import threading
 import time
 
 from common.config.settings import load_settings, server_bind_address, service_address
+from common.crypto.blob import decrypt_blob, encrypt_blob
 from common.crypto.des import decrypt_text, encrypt_text
 from common.crypto.sha256 import sha256_hex
 from common.models.tickets import decrypt_authenticator, decrypt_ticket, encrypt_model
@@ -37,7 +38,15 @@ def _history_page_size(default: int = 80) -> int:
 
 
 def _encrypt_images_enabled() -> bool:
-    return bool(PERFORMANCE_SETTINGS.get("encrypt_images", False))
+    return True
+
+
+def _server_image_key() -> str:
+    configured = str(PERFORMANCE_SETTINGS.get("image_storage_key", "") or "")
+    if configured:
+        return configured
+    chat = dao.get_service(CHAT_SERVICE) or {}
+    return str(chat.get("service_key", "safechat-image-storage-key"))
 
 
 def handle_message(message: dict, address: tuple[str, int]) -> Message:
@@ -267,21 +276,18 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
             return Message(type="ERROR", seq=message["seq"], body={"error": mute_error})
         
         image_cipher = message["body"].get("image_cipher")
-        image_plain = message["body"].get("image_data")
         file_name = message["body"]["file_name"]
         file_size = message["body"]["file_size"]
 
-        if image_plain:
-            plaintext = str(image_plain)
-        elif image_cipher:
-            plaintext = decrypt_text(image_cipher["ciphertext"], image_cipher["iv"], ticket.session_key)
-        else:
-            return Message(type="ERROR", seq=message["seq"], body={"error": "图片数据不能为空"})
+        if not image_cipher or image_cipher.get("alg") != "AES-256-GCM":
+            return Message(type="ERROR", seq=message["seq"], body={"error": "图片必须使用 AES-GCM 加密发送"})
+        image_bytes = decrypt_blob(image_cipher, ticket.session_key)
         
         chat_type = message["body"].get("chat_type", "group")
         recipient = message["body"].get("recipient", "")
         
-        # 图片正文保存为 base64 明文，消息历史保留发送者的 HMAC/SIG。
+        # 图片正文按配置保存：开启图片加密时使用服务端 AES-GCM 密钥落库。
+        stored_image = _pack_stored_image(image_bytes)
         message_id = dao.store_chat_message(
             sender=ticket.client_id,
             recipient=recipient,
@@ -291,7 +297,7 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
             message_hmac=message.get("hmac", ""),
             message_sig=message.get("sig", ""),
             message_pubkey=_session_pubkey(ticket.client_id, ticket.session_key),
-            image_data=plaintext,
+            image_data=stored_image,
             file_name=file_name,
         )
         
@@ -470,6 +476,7 @@ def _handle_image_fetch(message: dict, address: tuple[str, int]) -> Message:
         return Message(type="ERROR", seq=message["seq"], body={"error": "无权读取该图片消息"})
     if not item.get("image_data"):
         return Message(type="ERROR", seq=message["seq"], body={"error": "该消息不包含图片"})
+    image_bytes = _unpack_stored_image(str(item["image_data"]))
 
     return Message(
         type="CHAT_RECV",
@@ -477,11 +484,7 @@ def _handle_image_fetch(message: dict, address: tuple[str, int]) -> Message:
         body={
             "message_id": message_id,
             "file_name": item.get("file_name", ""),
-            **(
-                {"image_cipher": encrypt_text(item["image_data"], ticket.session_key)}
-                if _encrypt_images_enabled()
-                else {"image_data": item["image_data"]}
-            ),
+            "image_cipher": encrypt_blob(image_bytes, ticket.session_key),
         },
     )
 
@@ -772,6 +775,27 @@ def _append_chat_message(sender: str, text: str, chat_type: str, recipient: str,
         image_data=image_data,
         file_name=file_name,
     )
+
+
+def _pack_stored_image(image_bytes: bytes) -> str:
+    return json.dumps(
+        {
+            "storage": "aes-gcm",
+            "payload": encrypt_blob(image_bytes, _server_image_key()),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _unpack_stored_image(image_data: str) -> bytes:
+    stored = json.loads(image_data)
+    if isinstance(stored, dict) and stored.get("storage") == "aes-gcm":
+        payload = stored.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("图片存储密文字段格式无效")
+        return decrypt_blob(payload, _server_image_key())
+    raise ValueError("图片存储格式不是 AES-GCM")
 
 
 def _session_key(sender: str, chat_type: str, recipient: str) -> str:

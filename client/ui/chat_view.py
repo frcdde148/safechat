@@ -86,6 +86,7 @@ class MessageBubble(QFrame):
         self.hmac = hmac
         self.sig = sig
         self.pubkey = pubkey
+        self.thumbnail_pixmap: QPixmap | None = None
         
         # 主布局
         layout = QHBoxLayout(self)
@@ -196,6 +197,9 @@ class MessageBubble(QFrame):
         pixmap = QPixmap.fromImage(image)
         if pixmap.isNull():
             return
+        self.thumbnail_pixmap = pixmap
+        if self.show_cipher and self.ciphertext:
+            return
         self.message_label.setPixmap(pixmap)
         self.message_label.setText("")
         self.message_label.setAlignment(Qt.AlignCenter)
@@ -213,42 +217,58 @@ class MessageBubble(QFrame):
         if file_name:
             self.file_name = file_name
 
+    def set_ciphertext(self, ciphertext: str) -> None:
+        self.ciphertext = ciphertext
+
     def set_display_mode(self, show_ciphertext: bool) -> None:
         self.show_cipher = show_ciphertext
-        if not self.image_data:
-            if show_ciphertext and (self.ciphertext or self.hmac or self.sig):
-                # 构建安全层卡片HTML
-                # 如果没有 hmac 和 sig，仅显示 ciphertext 原文（不含 iv），并保持原有气泡样式
-                if not self.hmac and not self.sig:
-                    # 尝试从字符串化的 dict 中提取内部 ciphertext 字段
-                    cipher_val = self.ciphertext or ""
-                    try:
-                        import ast, json
-                        s = str(self.ciphertext).strip()
-                        if s.startswith("{"):
-                            try:
-                                obj = ast.literal_eval(s)
-                            except Exception:
-                                try:
-                                    obj = json.loads(s)
-                                except Exception:
-                                    obj = None
-                            if isinstance(obj, dict) and "ciphertext" in obj:
-                                cipher_val = obj.get("ciphertext", "")
-                    except Exception:
-                        cipher_val = self.ciphertext
-
-                    # 使用等宽字体显示原始 ciphertext，保持气泡颜色不变
-                    font = QFont("Consolas")
-                    font.setPointSize(12)
-                    self.message_label.setFont(font)
-                    self.message_label.setText(str(cipher_val))
-                else:
-                    html = self._build_security_layers_html()
-                    self.message_label.setText(html)
+        if show_ciphertext and (self.ciphertext or self.hmac or self.sig):
+            self.message_label.setPixmap(QPixmap())
+            if not self.hmac and not self.sig:
+                font = QFont("Consolas")
+                font.setPointSize(19)
+                self.message_label.setFont(font)
+                self.message_label.setText(str(self._cipher_value()))
             else:
-                self.message_label.setText(self.text)
-                self._restore_style()
+                self.message_label.setText(self._build_security_layers_html())
+            return
+
+        if self.image_data or self.file_name:
+            self._restore_image_display()
+        else:
+            self.message_label.setFont(QFont())
+            self.message_label.setText(self.text)
+            self._restore_style()
+
+    def _restore_image_display(self) -> None:
+        self._restore_style()
+        if self.thumbnail_pixmap and not self.thumbnail_pixmap.isNull():
+            self.message_label.setPixmap(self.thumbnail_pixmap)
+            self.message_label.setText("")
+            self.message_label.setAlignment(Qt.AlignCenter)
+            return
+        display_name = self.file_name or self.text.replace("[图片]", "").strip()
+        self.message_label.setPixmap(QPixmap())
+        self.message_label.setText(f"[图片] {display_name}\n点击查看")
+        self.message_label.setAlignment(Qt.AlignCenter)
+
+    def _cipher_value(self) -> str:
+        import ast
+        import json
+
+        cipher_val = self.ciphertext or ""
+        try:
+            s = str(self.ciphertext).strip()
+            if s.startswith("{"):
+                try:
+                    obj = ast.literal_eval(s)
+                except Exception:
+                    obj = json.loads(s)
+                if isinstance(obj, dict) and "ciphertext" in obj:
+                    cipher_val = obj.get("ciphertext", "")
+        except Exception:
+            cipher_val = self.ciphertext
+        return str(cipher_val)
 
     def _build_security_layers_html(self) -> str:
         """构建仅包含 DES ciphertext、HMAC 和 RSA signature 的安全层 HTML。
@@ -257,38 +277,18 @@ class MessageBubble(QFrame):
         - 不显示 Plaintext 和 Packet Info
         - 若 ciphertext 是 dict 字符串或 dict，尝试提取内部 'ciphertext' 字段（不显示 iv）
         """
-        import ast
-        import json
+        import html
 
         html_parts = []
-
-        # 解析并提取真正的 ciphertext 字段（如果可能）
-        cipher_val = self.ciphertext or ""
-        try:
-            if isinstance(self.ciphertext, str):
-                s = self.ciphertext.strip()
-                if s.startswith("{"):
-                    try:
-                        obj = ast.literal_eval(s)
-                    except Exception:
-                        try:
-                            obj = json.loads(s)
-                        except Exception:
-                            obj = None
-                    if isinstance(obj, dict) and "ciphertext" in obj:
-                        cipher_val = obj.get("ciphertext", "")
-        except Exception:
-            cipher_val = self.ciphertext
-
-        cipher_display = cipher_val if cipher_val is not None else ""
-        cipher_display_escaped = str(cipher_display).replace("<", "&lt;").replace(">", "&gt;")
+        cipher_display_escaped = html.escape(self._cipher_value())
+        cipher_title = "图片 AES-GCM 密文 (ciphertext)" if (self.image_data or self.file_name) else "DES 加密 (ciphertext)"
 
         # DES 层（蓝色）：只显示 ciphertext（不包含 iv）
         if cipher_display_escaped:
             html_parts.append(f'''
         <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
-            <div style="font-weight: 600; font-size: 14px; color: #075985; margin-bottom: 4px;">DES 加密 (ciphertext)</div>
-            <div style="font-size: 14px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 160px; overflow-y: auto;">
+            <div style="font-weight: 600; font-size: 22px; color: #075985; margin-bottom: 6px;">{cipher_title}</div>
+            <div style="font-size: 21px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 260px; overflow-y: auto;">
                 {cipher_display_escaped}
             </div>
         </div>
@@ -296,11 +296,11 @@ class MessageBubble(QFrame):
 
         # HMAC 层：始终显示（若为空显示 '(none)'）
         hmac_display = str(self.hmac) if self.hmac else "(none)"
-        hmac_display_escaped = hmac_display.replace("<", "&lt;").replace(">", "&gt;")
+        hmac_display_escaped = html.escape(hmac_display)
         html_parts.append(f'''
         <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
-            <div style="font-weight: 600; font-size: 14px; color: #075985; margin-bottom: 4px;">HMAC-SHA256</div>
-            <div style="font-size: 14px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 120px; overflow-y: auto;">
+            <div style="font-weight: 600; font-size: 22px; color: #075985; margin-bottom: 6px;">HMAC-SHA256</div>
+            <div style="font-size: 21px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 200px; overflow-y: auto;">
                 {hmac_display_escaped}
             </div>
         </div>
@@ -308,11 +308,11 @@ class MessageBubble(QFrame):
 
         # RSA 层：始终显示（若为空显示 '(none)'）
         sig_display = str(self.sig) if self.sig else "(none)"
-        sig_display_escaped = sig_display.replace("<", "&lt;").replace(">", "&gt;")
+        sig_display_escaped = html.escape(sig_display)
         html_parts.append(f'''
         <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
-            <div style="font-weight: 600; font-size: 14px; color: #075985; margin-bottom: 4px;">RSA Signature</div>
-            <div style="font-size: 14px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 160px; overflow-y: auto;">
+            <div style="font-weight: 600; font-size: 22px; color: #075985; margin-bottom: 6px;">RSA Signature</div>
+            <div style="font-size: 21px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 260px; overflow-y: auto;">
                 {sig_display_escaped}
             </div>
         </div>
@@ -684,12 +684,15 @@ class ChatView(QWidget):
             self._refresh_cipher_toggle_ui()
         return bubble
 
-    def set_message_image(self, bubble: MessageBubble, image_data: str, file_name: str = "") -> None:
+    def set_message_image(self, bubble: MessageBubble, image_data: str, file_name: str = "", ciphertext: str = "") -> None:
         """给已有图片消息气泡填充图片正文并生成缩略图。"""
         if bubble not in self.message_bubbles:
             return
         bubble.set_image_data(image_data, file_name)
+        if ciphertext:
+            bubble.set_ciphertext(ciphertext)
         self._request_thumbnail(bubble, image_data, file_name or bubble.file_name)
+        bubble.set_display_mode(self.show_ciphertext)
 
     def _request_thumbnail(self, bubble: MessageBubble, image_data: str, file_name: str) -> None:
         key = self._thumbnail_key(image_data, file_name)

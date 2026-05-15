@@ -58,7 +58,7 @@ python tests\perf_smoke.py
 
 覆盖：
 
-- `encrypt_images=false/true` 两种配置。
+- 图片固定使用 AES-GCM 加密。
 - 写入 100 条群聊文本。
 - 拉取最近历史页。
 - 空轮询平均耗时。
