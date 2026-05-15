@@ -795,20 +795,14 @@ class AdminConsole(QMainWindow):
                 widget.setEnabled(enabled)
 
     def _as_admin_request(self, action_type: str, fields: dict[str, Any] | None = None) -> dict[str, Any]:
-        host, port = service_address("as_server")
-        body = {"admin_token": self._admin_token, **(fields or {})}
-        response = request(host, port, Message(type=action_type, seq=0, body=body), timeout=10.0)
-        if response["type"] == "ERROR":
-            raise RuntimeError(response["body"].get("error", "AS 管理请求失败"))
-        return response["body"]
+        if not self._auth_client:
+            raise RuntimeError("请先登录控制台")
+        return self._auth_client.as_admin_request(action_type, self._admin_token, fields)
 
     def _tgs_admin_request(self, action_type: str, fields: dict[str, Any] | None = None) -> dict[str, Any]:
-        host, port = service_address("tgs_server")
-        body = {"admin_token": self._admin_token, **(fields or {})}
-        response = request(host, port, Message(type=action_type, seq=0, body=body), timeout=10.0)
-        if response["type"] == "ERROR":
-            raise RuntimeError(response["body"].get("error", "TGS 管理请求失败"))
-        return response["body"]
+        if not self._auth_client:
+            raise RuntimeError("请先登录控制台")
+        return self._auth_client.tgs_admin_request(action_type, self._admin_token, fields)
 
     @staticmethod
     def _tcp_check(host: str, port: int) -> bool:

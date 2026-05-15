@@ -111,6 +111,8 @@ def _run_scenarios(ports: dict[str, int], tmp_path: Path) -> None:
     sys.path.insert(0, str(PROJECT_ROOT))
 
     from client.net.auth_client import AuthClient
+    from common.protocol.message import Message
+    from common.protocol.socket_io import request
 
     alice = _login(AuthClient, "alice", "alice123", ports)
     bob = _login(AuthClient, "bob", "bob123", ports)
@@ -141,6 +143,14 @@ def _run_scenarios(ports: dict[str, int], tmp_path: Path) -> None:
     admin = _login(AuthClient, "admin", "admin123", ports, client_type="admin_console")
     token = admin.request_admin_token()
     assert token, "控制台未获取 admin_token"
+    as_users = admin.as_admin_request("AS_ADMIN_LIST_USERS", token).get("users", [])
+    assert any(row.get("username") == "alice" for row in as_users), "加密 AS 管理请求未返回用户列表"
+    tgs_logs = admin.tgs_admin_request("TGS_ADMIN_AUDIT_QUERY", token, {"limit": 5}).get("audit_logs", [])
+    assert isinstance(tgs_logs, list), "加密 TGS 管理请求未返回审计列表"
+    old_as = request("127.0.0.1", ports["as"], Message(type="AS_ADMIN_LIST_USERS", seq=0, body={"admin_token": token}), timeout=5.0)
+    assert old_as["type"] == "ERROR" and "加密格式" in old_as["body"].get("error", ""), "AS 仍接受旧版明文管理请求"
+    old_tgs = request("127.0.0.1", ports["tgs"], Message(type="TGS_ADMIN_AUDIT_QUERY", seq=0, body={"admin_token": token}), timeout=5.0)
+    assert old_tgs["type"] == "ERROR" and "加密格式" in old_tgs["body"].get("error", ""), "TGS 仍接受旧版明文管理请求"
     admin.admin_mute_user("alice", duration_seconds=60, reason="e2e 禁言")
     try:
         alice.send_chat_message("这条消息应被禁言拒绝")

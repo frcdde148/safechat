@@ -21,3 +21,4 @@ AS 负责：
 当前版本中，客户端 RSA 公钥不发送给 AS，AS 也不保存客户端公钥。公钥只在 `C_V_REQ` 中发送给 ChatServer 并绑定到聊天会话。
 
 AS 是用户和角色的主权限源。
+AS 管理接口除 `AS_ADMIN_TOKEN_REQ` 外只接受加密管理请求：客户端提交 `ticket_tgs`、`authenticator_c` 和 `admin_cipher`，其中 `admin_cipher` 使用 `Kc,tgs` 加密并包含 `admin_token` 与业务字段。
