@@ -979,6 +979,40 @@ class AuthClient:
         
         return token
 
+    def as_admin_request(
+        self,
+        action_type: str,
+        admin_token: str,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """发送 AS 管理请求，管理令牌和业务字段均使用 Kc,tgs 加密。"""
+        message = Message(
+            type=action_type,
+            seq=self._next_seq(),
+            body=self._encrypted_tgt_admin_body(action_type, admin_token, fields),
+        )
+        response = request(self.as_host, self.as_port, message, timeout=10.0)
+        self._raise_on_error(response)
+        return response["body"]
+
+    def tgs_admin_request(
+        self,
+        action_type: str,
+        admin_token: str,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """发送 TGS 管理请求，管理令牌和业务字段均使用 Kc,tgs 加密。"""
+        if not self.tgs_host or not self.tgs_port:
+            raise ValueError("缺少 TGS 地址，请先完成 Kerberos 认证")
+        message = Message(
+            type=action_type,
+            seq=self._next_seq(),
+            body=self._encrypted_tgt_admin_body(action_type, admin_token, fields),
+        )
+        response = request(self.tgs_host, self.tgs_port, message, timeout=10.0)
+        self._raise_on_error(response)
+        return response["body"]
+
     def chat_admin_list_messages(self, chat_type: str = "All", user_filter: str = "", limit: int = 200) -> list[dict[str, Any]]:
         """管理员查询消息记录
         
@@ -1070,6 +1104,37 @@ class AuthClient:
         response = request(self.chat_host, self.chat_port, message, timeout=10.0)
         self._raise_on_error(response)
         return response["body"]
+
+    def _encrypted_tgt_admin_body(
+        self,
+        action_type: str,
+        admin_token: str,
+        fields: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not self.tgt or not self.session_key_c_tgs:
+            raise ValueError("缺少 TGT，请先完成 Kerberos 认证")
+        if not admin_token:
+            raise ValueError("缺少管理员令牌，请重新登录控制台")
+
+        authenticator = encrypt_model(
+            issue_authenticator(self.username, self.tgt_client_addr or self.client_addr),
+            self.session_key_c_tgs,
+        )
+        plaintext = json.dumps(
+            {
+                "admin_token": admin_token,
+                "action_type": action_type,
+                "fields": fields or {},
+                "ts": self._next_seq_timestamp(),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return {
+            "ticket_tgs": self.tgt,
+            "authenticator_c": authenticator,
+            "admin_cipher": encrypt_text(plaintext, self.session_key_c_tgs),
+        }
 
     @staticmethod
     def _raise_on_error(response: dict[str, Any]) -> None:

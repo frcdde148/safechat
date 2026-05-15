@@ -15,4 +15,4 @@ TGS 负责：
 - 返回 ChatServer 对外地址。
 - 记录 TGS 审计日志。
 
-TGS 管理接口只验证 AS 签发的短期 `admin_token`。
+TGS 管理接口只接受加密管理请求：客户端提交 `ticket_tgs`、`authenticator_c` 和 `admin_cipher`，其中 `admin_cipher` 使用 `Kc,tgs` 加密并包含 `admin_token` 与业务字段。

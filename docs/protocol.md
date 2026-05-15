@@ -21,7 +21,7 @@
 控制台也是一个 Kerberos 客户端。它先完成普通登录，然后：
 
 - 向 AS 申请短期 `admin_token`。
-- 使用 `admin_token` 调用 AS/TGS 管理接口。
+- 使用 `Kc,tgs` 加密管理令牌和业务字段后调用 AS/TGS 管理接口。
 - 使用 Service Ticket、`Kc,v` 会话和 RSA 签名调用 ChatServer 管理接口。
 
 ### 1.3 AS
@@ -656,29 +656,52 @@ AS 校验用户名、session ID 和客户端地址后更新会话时间。
 | `admin_token` | AS 签发的短期管理员令牌。 |
 | `expires_in` | 有效期秒数，当前为 3600。 |
 
-后续 AS 管理请求在 `body.admin_token` 中携带令牌：
+后续 AS/TGS 管理请求不携带明文 `admin_token` 或业务字段。客户端使用 TGT 中的 `Kc,tgs` 构造统一加密请求：
+
+| `body` 字段 | 说明 |
+| --- | --- |
+| `ticket_tgs` | AS 签发给客户端的 TGT，服务端用 TGS 服务密钥解密。 |
+| `authenticator_c` | `DES-CBC_Kc,tgs(Authenticator)`，用于证明请求者持有 `Kc,tgs`。 |
+| `admin_cipher` | `DES-CBC_Kc,tgs(JSON)`，密文内包含 `admin_token`、`action_type`、`fields`、`ts`。 |
+
+`admin_cipher` 明文结构：
+
+```json
+{
+  "admin_token": "AS 签发的短期管理员令牌",
+  "action_type": "AS_ADMIN_CREATE_USER",
+  "fields": {
+    "username": "new_user",
+    "password": "初始密码",
+    "role": "user"
+  },
+  "ts": 1710000000000
+}
+```
+
+服务端会校验 TGT、Authenticator、密文动作类型、`admin_token`，并要求令牌用户与 TGT 用户一致。旧版 `body.admin_token + 明文字段` 管理请求会被拒绝。
 
 | 消息类型 | 主要字段 | 说明 |
 | --- | --- | --- |
-| `AS_ADMIN_LIST_USERS` | `admin_token` | 列出用户。 |
-| `AS_ADMIN_CREATE_USER` | `admin_token`, `username`, `password`, `role` | 创建用户。 |
-| `AS_ADMIN_DELETE_USER` | `admin_token`, `target_username` | 删除用户。 |
-| `AS_ADMIN_SET_ROLE` | `admin_token`, `target_username`, `role` | 设置角色。 |
-| `AS_ADMIN_RESET_PASSWORD` | `admin_token`, `target_username`, `password` | 重置密码。 |
-| `AS_ADMIN_LIST_SESSIONS` | `admin_token` | 查看活动会话。 |
-| `AS_ADMIN_INVALIDATE_USER` | `admin_token`, `target_username` | 使用户 AS 会话失效。 |
-| `AS_ADMIN_BAN_IP` | `admin_token`, `ip_address`, `reason`, `ban_seconds` | 封禁 IP。 |
-| `AS_ADMIN_UNBAN_IP` | `admin_token`, `ip_address` | 解除 IP 封禁。 |
-| `AS_ADMIN_LIST_IP_BANS` | `admin_token` | 查看 IP 封禁列表。 |
-| `AS_ADMIN_AUDIT_QUERY` | `admin_token`, `action_filter`, `limit` | 查询 AS 审计。 |
+| `AS_ADMIN_LIST_USERS` | `fields={}` | 列出用户。 |
+| `AS_ADMIN_CREATE_USER` | `fields.username`, `fields.password`, `fields.role` | 创建用户。 |
+| `AS_ADMIN_DELETE_USER` | `fields.target_username` | 删除用户。 |
+| `AS_ADMIN_SET_ROLE` | `fields.target_username`, `fields.role` | 设置角色。 |
+| `AS_ADMIN_RESET_PASSWORD` | `fields.target_username`, `fields.password` | 重置密码。 |
+| `AS_ADMIN_LIST_SESSIONS` | `fields={}` | 查看活动会话。 |
+| `AS_ADMIN_INVALIDATE_USER` | `fields.target_username` | 使用户 AS 会话失效。 |
+| `AS_ADMIN_BAN_IP` | `fields.ip_address`, `fields.reason`, `fields.ban_seconds` | 封禁 IP。 |
+| `AS_ADMIN_UNBAN_IP` | `fields.ip_address` | 解除 IP 封禁。 |
+| `AS_ADMIN_LIST_IP_BANS` | `fields={}` | 查看 IP 封禁列表。 |
+| `AS_ADMIN_AUDIT_QUERY` | `fields.action_filter`, `fields.limit` | 查询 AS 审计。 |
 
-AS/TGS 管理接口依赖 `admin_token`，不使用客户端 RSA 签名。
+AS/TGS 管理接口依赖加密的 `admin_token` 与 `Kc,tgs` 认证器，不使用客户端 RSA 签名。
 
 ### 8.2 TGS 管理接口
 
 | 消息类型 | 主要字段 | 说明 |
 | --- | --- | --- |
-| `TGS_ADMIN_AUDIT_QUERY` | `admin_token`, `action_filter`, `limit` | 查询 TGS 审计。 |
+| `TGS_ADMIN_AUDIT_QUERY` | `fields.action_filter`, `fields.limit` | 查询 TGS 审计。 |
 
 响应类型为 `TGS_ADMIN_ACK`。
 
