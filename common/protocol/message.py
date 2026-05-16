@@ -24,8 +24,6 @@ class Message:
     seq: int
     body: dict[str, Any] = field(default_factory=dict)
     sid: str = ""
-    v: int = PROTOCOL_VERSION
-    ts: int = field(default_factory=lambda: int(time.time() * 1000))
     nonce: str = field(default_factory=lambda: os.urandom(NONCE_BYTES).hex())
     hmac: str = ""
     sig: str = ""
@@ -61,21 +59,17 @@ def from_json(raw: str | bytes) -> dict[str, Any]:
 
 def validate_message(message: dict[str, Any]) -> None:
     """路由前验证公共封装字段。"""
-    required = {"v", "type", "seq", "sid", "ts", "nonce", "body", "hmac", "sig"}
+    required = {"type", "seq", "sid", "nonce", "body", "hmac", "sig"}
     missing = required - message.keys()
     if missing:
         raise ValueError(f"missing protocol field(s): {sorted(missing)}")
 
-    if message["v"] != PROTOCOL_VERSION:
-        raise ValueError(f"unsupported protocol version: {message['v']}")
     if message["type"] not in ALL_TYPES:
         raise ValueError(f"unknown message type: {message['type']}")
     if not isinstance(message["seq"], int) or message["seq"] < 0:
         raise ValueError("seq must be a non-negative integer")
     if not isinstance(message["sid"], str):
         raise ValueError("sid must be a string")
-    if not isinstance(message["ts"], int):
-        raise ValueError("ts must be an integer timestamp in milliseconds")
     if not isinstance(message["nonce"], str) or len(message["nonce"]) != NONCE_BYTES * 2:
         raise ValueError("nonce must be 16 hex characters")
     int(message["nonce"], 16)

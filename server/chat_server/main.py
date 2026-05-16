@@ -148,10 +148,13 @@ def _handle_mutual_auth(message: dict, address: tuple[str, int]) -> Message:
         },
     }
     
+    # 使用客户端发送的nonce值，确保步骤5和步骤6的nonce一致
+    request_nonce = message.get("nonce", "")
     return Message(
         type="V_C_REP",
         seq=message["seq"],
         body=response_body,
+        nonce=request_nonce,
     )
 
 

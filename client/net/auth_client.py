@@ -73,6 +73,9 @@ class AuthClient:
         self.authenticator_tgs_plaintext: dict[str, Any] | None = None
         self.authenticator_v_plaintext: dict[str, Any] | None = None
         
+        # 步骤5的nonce，用于步骤6验证
+        self.chat_request_nonce: str = ""
+        
         # 消息游标（记录已读消息ID，防止重复拉取）
         self.last_message_ids: dict[str, int] = {}
         
@@ -400,10 +403,12 @@ class AuthClient:
             },
         }
         message = Message(
-            type="C_V_REQ",                         # 请求类型：客户端→服务端请求
+            type="C_V_REQ",                         # 请求类型：客户端->服务端请求
             seq=self._next_seq(),
             body=body,
         )
+        # 保存nonce值，用于步骤6验证
+        self.chat_request_nonce = message.nonce
         response = request(self.chat_host, self.chat_port, message, timeout=10.0)
         self._raise_on_error(response)
         
@@ -439,6 +444,12 @@ class AuthClient:
 
     def _explain_chat_response(self) -> str:
         """步骤6 Client/Server 相互认证"""
+        # 验证服务器返回的nonce是否与步骤5发送的相同
+        if self.chat_response and self.chat_request_nonce:
+            response_nonce = self.chat_response.get("nonce", "")
+            if response_nonce != self.chat_request_nonce:
+                raise ValueError(f"V_C_REP 的 nonce 校验失败: 期望 {self.chat_request_nonce}, 实际 {response_nonce}")
+        
         chat_ext = self._extensions(self.chat_response.get("body", {})) if self.chat_response else {}
         return json.dumps(
             {
@@ -446,6 +457,7 @@ class AuthClient:
                 "receive": self._display_protocol(self.chat_response),
                 "plaintext": {
                     "ts_5_plus_1": self.chat_mutual_auth.get("ts_5_plus_1"),
+                    "nonce": self.chat_response.get("nonce") if self.chat_response else None,
                 },
                 "authenticated": True,
                 "extensions": chat_ext,
