@@ -281,14 +281,17 @@ class MessageBubble(QFrame):
 
         html_parts = []
         cipher_display_escaped = html.escape(self._cipher_value())
-        cipher_title = "图片 AES-GCM 密文 (ciphertext)" if (self.image_data or self.file_name) else "DES 加密 (ciphertext)"
+        cipher_title = "图片密文 (ciphertext)" if (self.image_data or self.file_name) else "DES加密 (ciphertext)"
 
         # DES 层（蓝色）：只显示 ciphertext（不包含 iv）
         if cipher_display_escaped:
+            # 图片 AES 密文截取前 900 字节，文本密文全部显示
+            if self.image_data or self.file_name:
+                cipher_display_escaped = cipher_display_escaped[:900] + ("..." if len(self._cipher_value()) > 900 else "")
             html_parts.append(f'''
         <div style="background: #dbeafe; border: 1px solid #0284c7; border-radius: 4px; padding: 8px; margin-bottom: 8px;">
             <div style="font-weight: 600; font-size: 22px; color: #075985; margin-bottom: 6px;">{cipher_title}</div>
-            <div style="font-size: 21px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 260px; overflow-y: auto;">
+            <div style="font-size: 21px; color: #0c4a6e; font-family: 'Consolas', monospace; word-wrap: break-word; white-space: pre-wrap; max-height: 260px; overflow-y: auto; text-align: left;">
                 {cipher_display_escaped}
             </div>
         </div>
