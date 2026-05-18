@@ -245,6 +245,8 @@ class MessageBubble(QFrame):
 
     def _restore_image_display(self) -> None:
         self._restore_style()
+        self.message_label.setCursor(Qt.PointingHandCursor)
+        self.message_label.mousePressEvent = lambda e: self._show_full_image()
         if self.thumbnail_pixmap and not self.thumbnail_pixmap.isNull():
             self.message_label.setPixmap(self.thumbnail_pixmap)
             self.message_label.setText("")
@@ -254,8 +256,6 @@ class MessageBubble(QFrame):
         self.message_label.setPixmap(QPixmap())
         self.message_label.setText(f"[图片] {display_name}\n点击查看")
         self.message_label.setAlignment(Qt.AlignCenter)
-        self.message_label.setCursor(Qt.PointingHandCursor)
-        self.message_label.mousePressEvent = lambda e: self._show_full_image()
 
     def _cipher_value(self) -> str:
         import ast
@@ -366,8 +366,13 @@ class MessageBubble(QFrame):
     def _full_ciphertext_text(self) -> str:
         parts = []
         if self.ciphertext:
-            title = "图片密文" if self._has_image_cipher() else "消息密文"
-            parts.append(f"{title}\n{self._cipher_value()}")
+            if self.image_data or self.file_name:
+                title = "图片密文"
+                value = self._cipher_value() if self._has_image_cipher() else "图片密文尚未加载。请切回明文点击图片，拉取图片后再查看密文。"
+            else:
+                title = "消息密文"
+                value = self._cipher_value()
+            parts.append(f"{title}\n{value}")
         if self.hmac:
             parts.append(f"HMAC-SHA256\n{self.hmac}")
         if self.sig:
