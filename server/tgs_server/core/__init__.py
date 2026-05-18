@@ -64,6 +64,7 @@ class TicketGrantingServer:
             成功时返回包含服务票据和会话密钥的TGSResponse
         """
         # 获取服务配置
+        print("魏心蕊")
         tgs_service = self.dao.get_service(self.TGS_SERVICE)
         chat_service = self.dao.get_service(self.CHAT_SERVICE)
         
