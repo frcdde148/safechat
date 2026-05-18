@@ -635,6 +635,7 @@ class AuthClient:
 
         return {
             "success": True,
+            "sent": message.to_dict(),
             "file_name": output_name,
             "image_base64": image_base64,
             "image_cipher": body["image_cipher"],
