@@ -1,0 +1,5 @@
+python -m server.as_server.main
+python -m server.tgs_server.main
+python -m server.chat_server.main
+python -m client.main
+python -m admin.main
