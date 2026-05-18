@@ -224,7 +224,7 @@ class MessageBubble(QFrame):
         self.show_cipher = show_ciphertext
         if show_ciphertext and (self.ciphertext or self.hmac or self.sig):
             self.message_label.setPixmap(QPixmap())
-            if self._has_image_cipher():
+            if self.image_data or self.file_name:
                 self.message_label.setCursor(Qt.PointingHandCursor)
                 self.message_label.mousePressEvent = lambda e: self._show_full_ciphertext()
             if not self.hmac and not self.sig:
@@ -340,7 +340,7 @@ class MessageBubble(QFrame):
         return ''.join(html_parts)
 
     def _show_full_ciphertext(self) -> None:
-        if not self.ciphertext:
+        if not (self.ciphertext or self.hmac or self.sig):
             return
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
 
@@ -351,7 +351,7 @@ class MessageBubble(QFrame):
         layout = QVBoxLayout(dialog)
         text = QTextEdit()
         text.setReadOnly(True)
-        text.setPlainText(self._cipher_value())
+        text.setPlainText(self._full_ciphertext_text())
         font = QFont("Consolas")
         font.setPointSize(18)
         text.setFont(font)
@@ -362,6 +362,17 @@ class MessageBubble(QFrame):
         layout.addWidget(close_button)
         dialog.showMaximized()
         dialog.exec_()
+
+    def _full_ciphertext_text(self) -> str:
+        parts = []
+        if self.ciphertext:
+            title = "图片密文" if self._has_image_cipher() else "消息密文"
+            parts.append(f"{title}\n{self._cipher_value()}")
+        if self.hmac:
+            parts.append(f"HMAC-SHA256\n{self.hmac}")
+        if self.sig:
+            parts.append(f"RSA Signature\n{self.sig}")
+        return "\n\n".join(parts)
 
     def _restore_style(self) -> None:
         if self.kind == "self":
@@ -750,6 +761,9 @@ class ChatView(QWidget):
             self._thumbnail_worker.enqueue(key, image_data)
 
     def _handle_image_click(self, bubble: MessageBubble) -> None:
+        if getattr(bubble, "show_cipher", False) and (getattr(bubble, "ciphertext", "") or getattr(bubble, "hmac", "") or getattr(bubble, "sig", "")):
+            bubble._show_full_ciphertext()
+            return
         if getattr(bubble, "full_image_data", ""):
             bubble._show_full_image()
             return
