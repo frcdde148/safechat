@@ -37,6 +37,7 @@ class AuthClient:
         self.username = payload["username"]
         self.password = payload["password"]
         self.client_type = payload.get("client_type", "client")
+
         # 如果没有显式传入 client_addr，则尝试推断出站地址以与服务器看到的地址匹配
         self.client_addr = payload.get("client_addr", "")
         self.tgt_client_addr = ""  # 从 TGT 中保存的客户端地址（步骤3使用）
@@ -137,7 +138,7 @@ class AuthClient:
         self.tgs_response: dict[str, Any] | None = None
         self.chat_request: dict[str, Any] | None = None
         self.chat_response: dict[str, Any] | None = None
-
+        
     def reset_session(self) -> None:
         """重置会话状态，用于重新登录"""
         self.seq = 1
