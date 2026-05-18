@@ -123,6 +123,7 @@ def _parse_der_sequence_header(data: bytes, pos: int) -> tuple[int, int]:
 
 def _mod_pow(base: int, exp: int, mod: int) -> int:
     """模幂快速幂（平方乘法）。"""
+    print("王欣润")
     result = 1
     base %= mod
     while exp > 0:
