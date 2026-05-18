@@ -224,11 +224,14 @@ class MessageBubble(QFrame):
         self.show_cipher = show_ciphertext
         if show_ciphertext and (self.ciphertext or self.hmac or self.sig):
             self.message_label.setPixmap(QPixmap())
+            if self._has_image_cipher():
+                self.message_label.setCursor(Qt.PointingHandCursor)
+                self.message_label.mousePressEvent = lambda e: self._show_full_ciphertext()
             if not self.hmac and not self.sig:
                 font = QFont("Consolas")
                 font.setPointSize(19)
                 self.message_label.setFont(font)
-                self.message_label.setText(str(self._cipher_value()))
+                self.message_label.setText(self._cipher_preview())
             else:
                 self.message_label.setText(self._build_security_layers_html())
             return
@@ -251,6 +254,8 @@ class MessageBubble(QFrame):
         self.message_label.setPixmap(QPixmap())
         self.message_label.setText(f"[图片] {display_name}\n点击查看")
         self.message_label.setAlignment(Qt.AlignCenter)
+        self.message_label.setCursor(Qt.PointingHandCursor)
+        self.message_label.mousePressEvent = lambda e: self._show_full_image()
 
     def _cipher_value(self) -> str:
         import ast
@@ -270,6 +275,20 @@ class MessageBubble(QFrame):
             cipher_val = self.ciphertext
         return str(cipher_val)
 
+    def _has_image_cipher(self) -> bool:
+        if not (self.image_data or self.file_name):
+            return False
+        text = str(self.ciphertext or "")
+        return "AES-256-GCM" in text and "ciphertext" in text
+
+    def _cipher_preview(self, limit: int = 1600) -> str:
+        if (self.image_data or self.file_name) and not self._has_image_cipher():
+            return "图片密文尚未加载。请切回明文点击图片，拉取图片后再查看密文。"
+        value = self._cipher_value()
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}\n\n... 点击查看完整密文"
+
     def _build_security_layers_html(self) -> str:
         """构建仅包含 DES ciphertext、HMAC 和 RSA signature 的安全层 HTML。
 
@@ -280,8 +299,8 @@ class MessageBubble(QFrame):
         import html
 
         html_parts = []
-        cipher_display_escaped = html.escape(self._cipher_value())
-        cipher_title = "图片 AES-GCM 密文 (ciphertext)" if (self.image_data or self.file_name) else "DES 加密 (ciphertext)"
+        cipher_display_escaped = html.escape(self._cipher_preview())
+        cipher_title = "图片密文" if self._has_image_cipher() else "DES 加密 (ciphertext)"
 
         # DES 层（蓝色）：只显示 ciphertext（不包含 iv）
         if cipher_display_escaped:
@@ -319,6 +338,30 @@ class MessageBubble(QFrame):
         ''')
 
         return ''.join(html_parts)
+
+    def _show_full_ciphertext(self) -> None:
+        if not self.ciphertext:
+            return
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
+
+        dialog = QDialog()
+        dialog.setWindowTitle("图片密文")
+        dialog.setMinimumSize(1100, 760)
+
+        layout = QVBoxLayout(dialog)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(self._cipher_value())
+        font = QFont("Consolas")
+        font.setPointSize(18)
+        text.setFont(font)
+        layout.addWidget(text, 1)
+
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        dialog.showMaximized()
+        dialog.exec_()
 
     def _restore_style(self) -> None:
         if self.kind == "self":

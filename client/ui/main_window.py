@@ -962,6 +962,10 @@ class MainWindow(QMainWindow):
                         from datetime import datetime
                         timestamp = datetime.now().strftime("%H:%M:%S")
                         image_cipher = str(result.get("image_cipher", ""))
+                        sent_msg = result.get("sent", {})
+                        hmac_digest = str(sent_msg.get("hmac", ""))
+                        signature = str(sent_msg.get("sig", ""))
+                        pubkey = self._auth_client.public_key_pem
                         if message_id:
                             self._visible_message_ids.add(visible_key)
                         
@@ -974,6 +978,9 @@ class MainWindow(QMainWindow):
                             result.get("file_name", ""),
                             self._auth_client.username,
                             timestamp,
+                            hmac_digest,
+                            signature,
+                            pubkey,
                         )
                         if message_id:
                             self._bubble_message_ids[bubble] = message_id
@@ -989,6 +996,9 @@ class MainWindow(QMainWindow):
                                     "ciphertext": image_cipher,
                                     "image_data": result.get("image_base64", ""),
                                     "file_name": result.get("file_name", ""),
+                                    "hmac": hmac_digest,
+                                    "sig": signature,
+                                    "pubkey": pubkey,
                                 },
                             )
                             self._remember_image_data(
