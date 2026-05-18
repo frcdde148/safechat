@@ -332,6 +332,7 @@ def _handle_image_send(message: dict, address: tuple[str, int]) -> Message:
 
 
 def _verify_signed_message_for_ticket(message: dict, ticket) -> bool:
+    print(f"王佳豪\n")
     """使用当前聊天会话绑定的公钥验证消息摘要和 RSA 签名。"""
     if not message.get("hmac") or not message.get("sig"):
         return False
