@@ -595,11 +595,12 @@ class MainWindow(QMainWindow):
                 ciphertext = message.get("ciphertext", "")
                 image_data = message.get("image_data", "")
                 file_name = message.get("file_name", "")
-                if not image_data and message_id in self._image_data_cache:
+                if message_id in self._image_data_cache:
                     image_data, cached_name, cached_cipher = self._image_data_cache[message_id]
                     self._image_data_cache.move_to_end(message_id)
                     file_name = file_name or cached_name
-                    ciphertext = ciphertext or cached_cipher
+                    if cached_cipher:
+                        ciphertext = cached_cipher
                 has_image = bool(message.get("has_image") or image_data or file_name)
                 username = message.get("sender") or self._auth_client.username
                 
@@ -706,6 +707,13 @@ class MainWindow(QMainWindow):
         self._image_data_cache.move_to_end(message_id)
         while len(self._image_data_cache) > 60:
             self._image_data_cache.popitem(last=False)
+        if image_cipher:
+            for messages in self._session_message_cache.values():
+                for message in messages:
+                    if int(message.get("id", 0) or 0) == message_id:
+                        message["ciphertext"] = image_cipher
+                        message["image_data"] = image_data
+                        message["file_name"] = file_name or message.get("file_name", "")
 
     def _remember_session_message(self, session_key: str, message: dict) -> None:
         """缓存会话最近消息，避免切换会话时反复从服务器加载。"""
